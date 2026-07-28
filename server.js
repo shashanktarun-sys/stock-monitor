@@ -84,8 +84,8 @@ async function yahooFetch(pathAndQuery) {
   throw error;
 }
 
-// Sector / industry (changes rarely) — cached in memory for 24h.
-const industryCache = new Map(); // symbol -> { sector, industry, ts }
+// Company profile (sector / industry / market cap) changes rarely — cached for 24h.
+const industryCache = new Map(); // symbol -> { sector, industry, marketCap, capBucket, capLabel, ts }
 const INDUSTRY_TTL_MS = 24 * 60 * 60 * 1000;
 
 const INDUSTRY_FALLBACK = {
@@ -125,27 +125,78 @@ const INDUSTRY_FALLBACK = {
   "ADANIENT.NS": { sector: "Energy", industry: "Thermal Coal" },
 };
 
+function classifyMarketCap(marketCap, symbol) {
+  if (!(marketCap > 0)) return { capBucket: null, capLabel: null };
+  const isIndia = symbol.endsWith(".NS");
+  const large = isIndia ? 200_000_000_000 : 10_000_000_000;
+  const mid = isIndia ? 50_000_000_000 : 2_000_000_000;
+  if (marketCap >= large) return { capBucket: "large", capLabel: "Large Cap" };
+  if (marketCap >= mid) return { capBucket: "mid", capLabel: "Mid Cap" };
+  return { capBucket: "small", capLabel: "Small Cap" };
+}
+
 async function getIndustryLive(symbol) {
   const q =
     `/v10/finance/quoteSummary/${encodeURIComponent(symbol)}` +
-    `?modules=assetProfile,summaryProfile`;
+    `?modules=assetProfile,summaryProfile,price,summaryDetail`;
   const data = await yahooFetch(q);
   const result = data?.quoteSummary?.result?.[0] || {};
   const profile = result.assetProfile || result.summaryProfile || {};
   const sector = (profile.sector || "").trim();
   const industry = (profile.industry || "").trim();
-  if (!sector && !industry) return null;
-  return { sector: sector || null, industry: industry || null };
+  const marketCap =
+    result.price?.marketCap?.raw ??
+    result.summaryDetail?.marketCap?.raw ??
+    result.price?.marketCap ??
+    result.summaryDetail?.marketCap ??
+    null;
+  const cap = classifyMarketCap(Number(marketCap) || 0, symbol);
+  if (!sector && !industry && !marketCap) return null;
+  return {
+    sector: sector || null,
+    industry: industry || null,
+    marketCap: marketCap || null,
+    capBucket: cap.capBucket,
+    capLabel: cap.capLabel,
+  };
 }
 
 function getIndustryFallback(symbol) {
-  return INDUSTRY_FALLBACK[symbol] || { sector: null, industry: null };
+  const base = INDUSTRY_FALLBACK[symbol] || { sector: null, industry: null };
+  const fallbackCap = classifyMarketCap(
+    /^(AAPL|MSFT|NVDA|AMZN|GOOGL|META|TSLA|RELIANCE\.NS|TCS\.NS|HDFCBANK\.NS|ICICIBANK\.NS)$/.test(
+      symbol
+    )
+      ? symbol.endsWith(".NS")
+        ? 300_000_000_000
+        : 50_000_000_000
+      : /^(INFY\.NS|SBIN\.NS|LT\.NS|ITC\.NS|SUNPHARMA\.NS|TITAN\.NS|BAJFINANCE\.NS|KOTAKBANK\.NS|ASIANPAINT\.NS|ONGC\.NS|AMD|NFLX)$/.test(
+            symbol
+          )
+        ? symbol.endsWith(".NS")
+          ? 80_000_000_000
+          : 5_000_000_000
+        : 1_000_000_000,
+    symbol
+  );
+  return {
+    ...base,
+    marketCap: null,
+    capBucket: fallbackCap.capBucket,
+    capLabel: fallbackCap.capLabel,
+  };
 }
 
 async function getIndustryProfile(symbol) {
   const cached = industryCache.get(symbol);
   if (cached && Date.now() - cached.ts < INDUSTRY_TTL_MS) {
-    return { sector: cached.sector, industry: cached.industry };
+    return {
+      sector: cached.sector,
+      industry: cached.industry,
+      marketCap: cached.marketCap ?? null,
+      capBucket: cached.capBucket ?? null,
+      capLabel: cached.capLabel ?? null,
+    };
   }
   let profile = null;
   if (liveEnabled()) {
@@ -400,6 +451,17 @@ const SIM_UNIVERSE = Object.entries(KNOWN).map(([symbol, v]) => ({
   country: v.country || "US",
 }));
 
+function getUniverse(country) {
+  const key = country === "IN" ? "IN" : "US";
+  return (MARKET_UNIVERSE[key] || []).map((symbol) => ({
+    symbol,
+    name: KNOWN[symbol]?.name || symbol.replace(".NS", ""),
+    exchange: key === "IN" ? "NSE" : "US",
+    type: symbol.startsWith("^") ? "INDEX" : "EQUITY",
+    country: key,
+  }));
+}
+
 function searchSimulated(query, country) {
   const q = query.toLowerCase();
   let pool = SIM_UNIVERSE;
@@ -460,19 +522,40 @@ async function search(query, country) {
 /*  Market movers (top gainers / losers of the day)                           */
 /* -------------------------------------------------------------------------- */
 
-const MOVER_UNIVERSE = {
+const MARKET_UNIVERSE = {
   US: [
-    "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "GOOGL", "META", "NFLX", "AMD",
-    "INTC", "JPM", "BAC", "WMT", "DIS", "KO", "PEP", "XOM", "CVX", "PFE",
-    "JNJ", "V", "MA", "BA", "NKE", "CSCO", "ORCL", "CRM", "ADBE", "QCOM", "PYPL",
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "TSLA", "LLY", "AVGO",
+    "JPM", "WMT", "XOM", "V", "MA", "COST", "UNH", "NFLX", "ORCL", "HD",
+    "PG", "JNJ", "BAC", "ABBV", "KO", "CRM", "CVX", "AMD", "MRK", "ADBE",
+    "PEP", "TMO", "LIN", "ACN", "MCD", "CSCO", "WFC", "IBM", "ABT", "PM",
+    "GE", "DIS", "INTU", "TXN", "NOW", "QCOM", "CAT", "INTC", "VZ", "AMGN",
+    "SPGI", "MS", "GS", "BKNG", "ISRG", "AXP", "RTX", "PLTR", "UBER", "PGR",
+    "BLK", "SCHW", "LOW", "DE", "SYK", "HON", "TJX", "AMAT", "ETN", "C",
+    "CMCSA", "DHR", "NEE", "COP", "VRTX", "GILD", "MU", "ADP", "ADI", "LRCX",
+    "SBUX", "PANW", "MDT", "MMC", "CB", "ELV", "BA", "MO", "PYPL", "SO",
+    "NKE", "MDLZ", "BMY", "UPS", "USB", "CVS", "T", "PFE", "FI", "SNPS",
   ],
   IN: [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
-    "SBIN.NS", "TATAMOTORS.NS", "WIPRO.NS", "ITC.NS", "BHARTIARTL.NS",
-    "LT.NS", "HINDUNILVR.NS", "AXISBANK.NS", "MARUTI.NS", "KOTAKBANK.NS",
-    "BAJFINANCE.NS", "HCLTECH.NS", "ASIANPAINT.NS", "SUNPHARMA.NS", "TITAN.NS",
-    "ULTRACEMCO.NS", "NESTLEIND.NS", "POWERGRID.NS", "NTPC.NS", "ONGC.NS",
-    "TATASTEEL.NS", "ADANIENT.NS", "JSWSTEEL.NS", "TECHM.NS", "COALINDIA.NS",
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "BHARTIARTL.NS", "ICICIBANK.NS",
+    "INFY.NS", "SBIN.NS", "LICI.NS", "HINDUNILVR.NS", "ITC.NS",
+    "LT.NS", "HCLTECH.NS", "SUNPHARMA.NS", "KOTAKBANK.NS", "BAJFINANCE.NS",
+    "MARUTI.NS", "AXISBANK.NS", "ULTRACEMCO.NS", "NTPC.NS", "ONGC.NS",
+    "WIPRO.NS", "TATAMOTORS.NS", "TITAN.NS", "ADANIENT.NS", "TATASTEEL.NS",
+    "POWERGRID.NS", "NESTLEIND.NS", "ASIANPAINT.NS", "TECHM.NS", "JSWSTEEL.NS",
+    "COALINDIA.NS", "M&M.NS", "BAJAJFINSV.NS", "ADANIPORTS.NS", "DMART.NS",
+    "ZOMATO.NS", "IRFC.NS", "HAL.NS", "BEL.NS", "SIEMENS.NS",
+    "DLF.NS", "PNB.NS", "PIDILITIND.NS", "INDIGO.NS", "DIVISLAB.NS",
+    "SBILIFE.NS", "HDFCLIFE.NS", "BPCL.NS", "GRASIM.NS", "EICHERMOT.NS",
+    "SHRIRAMFIN.NS", "TRENT.NS", "LODHA.NS", "ABB.NS", "BANKBARODA.NS",
+    "CIPLA.NS", "DRREDDY.NS", "APOLLOHOSP.NS", "ADANIGREEN.NS", "TVSMOTOR.NS",
+    "HAVELLS.NS", "AMBUJACEM.NS", "BOSCHLTD.NS", "GODREJCP.NS", "MOTHERSON.NS",
+    "INDUSINDBK.NS", "NAUKRI.NS", "IOC.NS", "RECLTD.NS", "PFC.NS",
+    "CGPOWER.NS", "VEDL.NS", "TORNTPHARM.NS", "DABUR.NS", "BRITANNIA.NS",
+    "HEROMOTOCO.NS", "CHOLAFIN.NS", "JINDALSTEL.NS", "ICICIPRULI.NS", "UPL.NS",
+    "BHEL.NS", "GAIL.NS", "MCDOWELL-N.NS", "ZYDUSLIFE.NS", "ADANIENSOL.NS",
+    "SAMVARDHANA.NS", "SOLARINDS.NS", "VBL.NS", "SRF.NS", "PAGEIND.NS",
+    "COLPAL.NS", "HDFCAMC.NS", "AUROPHARMA.NS", "BERGEPAINT.NS", "CANBK.NS",
+    "NHPC.NS", "IDBI.NS", "UNIONBANK.NS", "SAIL.NS", "MUTHOOTFIN.NS",
   ],
 };
 
@@ -482,7 +565,7 @@ const MOVERS_TTL_MS = 60_000;
 async function getMovers(country, customSymbols) {
   const key = country === "IN" ? "IN" : "US";
   const universe =
-    customSymbols && customSymbols.length ? customSymbols : MOVER_UNIVERSE[key];
+    customSymbols && customSymbols.length ? customSymbols : MARKET_UNIVERSE[key];
   const cacheKey = key + "|" + universe.join(",");
   const cached = moversCache[cacheKey];
   if (cached && Date.now() - cached.ts < MOVERS_TTL_MS) return cached.data;
@@ -514,6 +597,533 @@ async function getMovers(country, customSymbols) {
     losers,
   };
   moversCache[cacheKey] = { ts: Date.now(), data };
+  return data;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  News analyzer (world headlines → country / industry / stock impact)       */
+/* -------------------------------------------------------------------------- */
+
+const newsCache = { ts: 0, data: null };
+const NEWS_TTL_MS = 5 * 60 * 1000;
+
+const NEWS_QUERIES = [
+  "AAPL",
+  "MSFT",
+  "NVDA",
+  "TSLA",
+  "AMZN",
+  "JPM",
+  "XOM",
+  "RELIANCE.NS",
+  "TCS.NS",
+  "HDFCBANK.NS",
+  "federal reserve interest rates",
+  "crude oil OPEC",
+  "india nifty banking",
+  "semiconductor AI chips",
+];
+
+const BULLISH_WORDS = [
+  "surge", "rally", "gain", "jump", "soar", "rise", "beat", "growth", "record",
+  "upgrade", "boom", "strong", "optimistic", "outperform", "profit", "expansion",
+  "deal", "approval", "breakthrough", "bullish", "recovery", "upbeat", "wins",
+];
+const BEARISH_WORDS = [
+  "fall", "drop", "plunge", "crash", "loss", "cut", "weak", "slowdown", "recession",
+  "downgrade", "lawsuit", "probe", "ban", "sanction", "layoff", "miss", "decline",
+  "fear", "risk", "war", "tariff", "inflation spike", "default", "bearish", "slump",
+];
+
+const COUNTRY_THEMES = [
+  {
+    country: "US",
+    label: "United States",
+    keywords: [
+      "united states", "u.s.", "usa", "federal reserve", "fed ", "wall street",
+      "nasdaq", "dow jones", "s&p", "treasury", "washington", "white house",
+    ],
+  },
+  {
+    country: "IN",
+    label: "India",
+    keywords: [
+      "india", "indian", "nifty", "sensex", "mumbai", "rbi", "rupee", "nse",
+      "modi", "delhi", "bse",
+    ],
+  },
+  {
+    country: "CN",
+    label: "China",
+    keywords: ["china", "chinese", "beijing", "shanghai", "yuan", "pboc", "hang seng"],
+  },
+  {
+    country: "EU",
+    label: "Europe",
+    keywords: ["europe", "eurozone", "ecb", "germany", "france", "uk ", "britain", "london"],
+  },
+  {
+    country: "JP",
+    label: "Japan",
+    keywords: ["japan", "tokyo", "nikkei", "yen", "boj"],
+  },
+];
+
+const INDUSTRY_THEMES = [
+  {
+    sector: "Technology",
+    industry: "Semiconductors",
+    keywords: ["semiconductor", "chip", "nvidia", "ai chip", "foundry", "tsmc", "gpu"],
+  },
+  {
+    sector: "Technology",
+    industry: "Software—Infrastructure",
+    keywords: ["software", "cloud", "saas", "microsoft", "oracle", "cybersecurity"],
+  },
+  {
+    sector: "Technology",
+    industry: "Consumer Electronics",
+    keywords: ["iphone", "apple", "smartphone", "consumer electronics"],
+  },
+  {
+    sector: "Energy",
+    industry: "Oil & Gas",
+    keywords: ["oil", "crude", "opec", "petrol", "gasoline", "energy", "lng", "natural gas"],
+  },
+  {
+    sector: "Financial Services",
+    industry: "Banks",
+    keywords: ["bank", "banking", "loan", "credit", "fed rate", "interest rate", "mortgage"],
+  },
+  {
+    sector: "Healthcare",
+    industry: "Drug Manufacturers",
+    keywords: ["pharma", "drug", "fda", "vaccine", "biotech", "healthcare"],
+  },
+  {
+    sector: "Consumer Cyclical",
+    industry: "Auto Manufacturers",
+    keywords: ["auto", "ev ", "electric vehicle", "tesla", "car sales", "automaker"],
+  },
+  {
+    sector: "Consumer Cyclical",
+    industry: "Internet Retail",
+    keywords: ["ecommerce", "e-commerce", "amazon", "retail sales", "online shopping"],
+  },
+  {
+    sector: "Communication Services",
+    industry: "Internet Content & Information",
+    keywords: ["social media", "advertising", "meta", "google", "streaming", "youtube"],
+  },
+  {
+    sector: "Basic Materials",
+    industry: "Metals & Mining",
+    keywords: ["steel", "copper", "iron ore", "mining", "metal", "commodity"],
+  },
+  {
+    sector: "Industrials",
+    industry: "Aerospace & Defense",
+    keywords: ["defense", "aerospace", "boeing", "military", "aircraft"],
+  },
+  {
+    sector: "Utilities",
+    industry: "Power Generation",
+    keywords: ["power", "electricity", "utility", "renewable", "solar", "grid"],
+  },
+];
+
+const STOCK_NAME_HINTS = {
+  AAPL: ["apple"],
+  MSFT: ["microsoft"],
+  NVDA: ["nvidia"],
+  AMZN: ["amazon"],
+  GOOGL: ["alphabet", "google"],
+  META: ["meta", "facebook"],
+  TSLA: ["tesla"],
+  NFLX: ["netflix"],
+  AMD: ["amd", "advanced micro devices"],
+  INTC: ["intel"],
+  JPM: ["jpmorgan", "jp morgan"],
+  BAC: ["bank of america"],
+  WMT: ["walmart"],
+  XOM: ["exxon"],
+  CVX: ["chevron"],
+  V: ["visa"],
+  MA: ["mastercard"],
+  ORCL: ["oracle"],
+  CRM: ["salesforce"],
+  ADBE: ["adobe"],
+  "RELIANCE.NS": ["reliance"],
+  "TCS.NS": ["tata consultancy", "tcs"],
+  "HDFCBANK.NS": ["hdfc bank"],
+  "INFY.NS": ["infosys"],
+  "ICICIBANK.NS": ["icici"],
+  "SBIN.NS": ["state bank of india", "sbi "],
+  "TATAMOTORS.NS": ["tata motors"],
+  "WIPRO.NS": ["wipro"],
+  "ITC.NS": ["itc limited", "itc ltd"],
+  "BHARTIARTL.NS": ["bharti", "airtel"],
+  "LT.NS": ["larsen", "l&t"],
+  "HINDUNILVR.NS": ["hindustan unilever", "hul"],
+  "MARUTI.NS": ["maruti"],
+  "ONGC.NS": ["ongc"],
+  "ADANIENT.NS": ["adani"],
+  "ZOMATO.NS": ["zomato"],
+  UBER: ["uber"],
+  PLTR: ["palantir"],
+  BA: ["boeing"],
+  PFE: ["pfizer"],
+  JNJ: ["johnson & johnson", "j&j"],
+};
+
+function scoreSentiment(text) {
+  const t = text.toLowerCase();
+  let score = 0;
+  for (const w of BULLISH_WORDS) if (t.includes(w)) score += 1;
+  for (const w of BEARISH_WORDS) if (t.includes(w)) score -= 1;
+  if (score > 1) return { bias: "bullish", score };
+  if (score < -1) return { bias: "bearish", score };
+  return { bias: "neutral", score };
+}
+
+function matchThemes(text, themes, keyField) {
+  const t = text.toLowerCase();
+  const hits = [];
+  for (const theme of themes) {
+    const matched = theme.keywords.filter((k) => t.includes(k.toLowerCase()));
+    if (!matched.length) continue;
+    hits.push({
+      ...theme,
+      matchedKeywords: matched,
+      strength: matched.length,
+    });
+  }
+  hits.sort((a, b) => b.strength - a.strength);
+  return hits.slice(0, 3);
+}
+
+function buildStockCatalog() {
+  const map = new Map();
+  const add = (symbol, names) => {
+    const list = [...new Set((names || []).filter(Boolean).map((n) => String(n).toLowerCase()))];
+    if (!list.length) return;
+    const prev = map.get(symbol) || [];
+    map.set(symbol, [...new Set([...prev, ...list, symbol.toLowerCase(), symbol.replace(".NS", "").toLowerCase()])]);
+  };
+  for (const [sym, info] of Object.entries(KNOWN)) {
+    if (sym.startsWith("^")) continue;
+    add(sym, [info.name, ...(STOCK_NAME_HINTS[sym] || [])]);
+  }
+  for (const [sym, hints] of Object.entries(STOCK_NAME_HINTS)) add(sym, hints);
+  for (const country of Object.keys(MARKET_UNIVERSE)) {
+    for (const sym of MARKET_UNIVERSE[country]) {
+      add(sym, [KNOWN[sym]?.name, ...(STOCK_NAME_HINTS[sym] || [])]);
+    }
+  }
+  return map;
+}
+
+const STOCK_CATALOG = buildStockCatalog();
+
+function matchStocks(text) {
+  const t = text.toLowerCase();
+  const hits = [];
+  for (const [symbol, names] of STOCK_CATALOG.entries()) {
+    const matched = names.filter((n) => n.length >= 3 && t.includes(n));
+    if (!matched.length) continue;
+    const profile = INDUSTRY_FALLBACK[symbol] || {};
+    hits.push({
+      symbol,
+      name: KNOWN[symbol]?.name || STOCK_NAME_HINTS[symbol]?.[0] || symbol.replace(".NS", ""),
+      country: symbol.endsWith(".NS") ? "IN" : "US",
+      sector: profile.sector || null,
+      industry: profile.industry || null,
+      matchedKeywords: matched.slice(0, 3),
+      strength: matched.length,
+    });
+  }
+  hits.sort((a, b) => b.strength - a.strength || a.symbol.localeCompare(b.symbol));
+  return hits.slice(0, 5);
+}
+
+function impactLabel(bias) {
+  if (bias === "bullish") return "Likely positive";
+  if (bias === "bearish") return "Likely negative";
+  return "Mixed / unclear";
+}
+
+function analyzeNewsItem(raw) {
+  const title = raw.title || raw.headline || "";
+  const summary = raw.summary || raw.description || "";
+  const blob = `${title}. ${summary}`;
+  const sentiment = scoreSentiment(blob);
+  const countries = matchThemes(blob, COUNTRY_THEMES).map((c) => ({
+    country: c.country,
+    label: c.label,
+    bias: sentiment.bias,
+    impact: impactLabel(sentiment.bias),
+    why: `Mentions ${c.matchedKeywords.slice(0, 2).join(", ")}`,
+  }));
+  const industries = matchThemes(blob, INDUSTRY_THEMES).map((i) => ({
+    sector: i.sector,
+    industry: i.industry,
+    bias: sentiment.bias,
+    impact: impactLabel(sentiment.bias),
+    why: `Theme match: ${i.matchedKeywords.slice(0, 2).join(", ")}`,
+  }));
+  const stocks = matchStocks(blob).map((s) => ({
+    symbol: s.symbol,
+    name: s.name,
+    country: s.country,
+    sector: s.sector,
+    industry: s.industry,
+    bias: sentiment.bias,
+    impact: impactLabel(sentiment.bias),
+    why: `Linked via ${s.matchedKeywords.slice(0, 2).join(", ")}`,
+  }));
+
+  // Cascade defaults: if stock hits exist but industry empty, lift from stock profile
+  if (!industries.length && stocks.length) {
+    for (const s of stocks) {
+      if (!s.sector && !s.industry) continue;
+      industries.push({
+        sector: s.sector || "Unknown",
+        industry: s.industry || "Related equities",
+        bias: sentiment.bias,
+        impact: impactLabel(sentiment.bias),
+        why: `Inferred from ${s.symbol.replace(".NS", "")}`,
+      });
+    }
+  }
+  if (!countries.length && stocks.length) {
+    for (const s of stocks) {
+      const theme = COUNTRY_THEMES.find((c) => c.country === s.country);
+      countries.push({
+        country: s.country,
+        label: theme?.label || s.country,
+        bias: sentiment.bias,
+        impact: impactLabel(sentiment.bias),
+        why: `Home market of ${s.symbol.replace(".NS", "")}`,
+      });
+    }
+  }
+
+  return {
+    id: raw.uuid || raw.id || `${title}-${raw.providerPublishTime || raw.pubDate || Date.now()}`,
+    title,
+    summary: summary.slice(0, 280),
+    publisher: raw.publisher || raw.provider || "Yahoo Finance",
+    link: raw.link || raw.url || null,
+    publishedAt: (raw.providerPublishTime || 0) * 1000 || Date.parse(raw.pubDate || "") || Date.now(),
+    sentiment: sentiment.bias,
+    sentimentScore: sentiment.score,
+    countries: countries.slice(0, 3),
+    industries: industries.slice(0, 3),
+    stocks: stocks.slice(0, 4),
+  };
+}
+
+function normalizeYahooNews(item) {
+  return {
+    uuid: item.uuid || item.id,
+    title: item.title,
+    summary: item.summary || "",
+    publisher: item.publisher,
+    link: item.link,
+    providerPublishTime: item.providerPublishTime,
+    relatedTickers: item.relatedTickers || [],
+  };
+}
+
+async function fetchNewsForQuery(query) {
+  const q =
+    `/v1/finance/search?q=${encodeURIComponent(query)}` +
+    `&quotesCount=0&newsCount=6&newsQueryId=news_cie_vespa&enableFuzzyQuery=false`;
+  const data = await yahooFetch(q);
+  return (data?.news || []).map(normalizeYahooNews);
+}
+
+function simulatedNewsBundle() {
+  const now = Math.floor(Date.now() / 1000);
+  return [
+    {
+      title: "Fed signals cautious path as markets weigh rate outlook",
+      summary: "Wall Street rallies as investors digest Federal Reserve comments on inflation and growth.",
+      publisher: "Pulse Sim",
+      providerPublishTime: now - 3600,
+      link: null,
+    },
+    {
+      title: "India banks lead gains after strong loan growth data",
+      summary: "HDFC Bank and ICICI Bank climb as RBI-linked credit trends stay upbeat for Indian lenders.",
+      publisher: "Pulse Sim",
+      providerPublishTime: now - 7200,
+      link: null,
+    },
+    {
+      title: "Oil prices jump on OPEC supply concerns",
+      summary: "Crude surge lifts energy majors while raising inflation risk for importers.",
+      publisher: "Pulse Sim",
+      providerPublishTime: now - 5400,
+      link: null,
+    },
+    {
+      title: "Semiconductor demand outlook brightens on AI chip orders",
+      summary: "Nvidia and AMD extend gains as cloud providers accelerate GPU deployments.",
+      publisher: "Pulse Sim",
+      providerPublishTime: now - 1800,
+      link: null,
+    },
+    {
+      title: "China growth worries weigh on global commodities",
+      summary: "Weak China data pressures metals and industrial names across Asia and Europe.",
+      publisher: "Pulse Sim",
+      providerPublishTime: now - 9000,
+      link: null,
+    },
+  ].map(analyzeNewsItem);
+}
+
+async function getNewsAnalysis() {
+  if (newsCache.data && Date.now() - newsCache.ts < NEWS_TTL_MS) {
+    return newsCache.data;
+  }
+
+  let articles = [];
+  let source = "live";
+  if (liveEnabled()) {
+    try {
+      const batches = await Promise.allSettled(NEWS_QUERIES.map((q) => fetchNewsForQuery(q)));
+      const seen = new Set();
+      batches.forEach((batch, qi) => {
+        if (batch.status !== "fulfilled") return;
+        const query = NEWS_QUERIES[qi];
+        const querySym = /^[A-Z0-9.^&-]{1,15}(\.NS)?$/i.test(query) ? query.toUpperCase() : null;
+        for (const item of batch.value) {
+          const key = (item.title || "").toLowerCase();
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          const analyzed = analyzeNewsItem(item);
+          const attach = (sym, why) => {
+            if (!sym || analyzed.stocks.some((s) => s.symbol === sym)) return;
+            const profile = INDUSTRY_FALLBACK[sym] || {};
+            analyzed.stocks.push({
+              symbol: sym,
+              name: KNOWN[sym]?.name || STOCK_NAME_HINTS[sym]?.[0] || sym.replace(".NS", ""),
+              country: sym.endsWith(".NS") ? "IN" : "US",
+              sector: profile.sector || null,
+              industry: profile.industry || null,
+              bias: analyzed.sentiment,
+              impact: impactLabel(analyzed.sentiment),
+              why,
+            });
+          };
+          if (querySym) attach(querySym, `From ${querySym} news search`);
+          for (const rt of item.relatedTickers || []) attach(String(rt).toUpperCase(), "Tagged by news source");
+          analyzed.stocks = analyzed.stocks.slice(0, 5);
+          // Cascade country/industry from attached stocks if still empty
+          if (!analyzed.countries.length && analyzed.stocks.length) {
+            for (const s of analyzed.stocks.slice(0, 2)) {
+              const theme = COUNTRY_THEMES.find((c) => c.country === s.country);
+              analyzed.countries.push({
+                country: s.country,
+                label: theme?.label || s.country,
+                bias: analyzed.sentiment,
+                impact: impactLabel(analyzed.sentiment),
+                why: `Home market of ${s.symbol.replace(".NS", "")}`,
+              });
+            }
+          }
+          if (!analyzed.industries.length && analyzed.stocks.length) {
+            for (const s of analyzed.stocks.slice(0, 2)) {
+              if (!s.sector && !s.industry) continue;
+              analyzed.industries.push({
+                sector: s.sector || "Unknown",
+                industry: s.industry || "Related equities",
+                bias: analyzed.sentiment,
+                impact: impactLabel(analyzed.sentiment),
+                why: `Inferred from ${s.symbol.replace(".NS", "")}`,
+              });
+            }
+          }
+          articles.push(analyzed);
+        }
+      });
+    } catch (err) {
+      if (err.network) noteLiveFailure();
+      source = "simulated";
+    }
+  } else {
+    source = "simulated";
+  }
+
+  if (!articles.length) {
+    articles = simulatedNewsBundle();
+    source = "simulated";
+  }
+
+  // Prefer stories that mapped to country / industry / stock; keep a few general ones.
+  const ranked = articles
+    .map((a) => ({
+      a,
+      relevance:
+        (a.countries?.length || 0) * 3 +
+        (a.industries?.length || 0) * 2 +
+        (a.stocks?.length || 0) * 4 +
+        Math.abs(a.sentimentScore || 0),
+    }))
+    .sort((x, y) => y.relevance - x.relevance || (y.a.publishedAt || 0) - (x.a.publishedAt || 0));
+  const withImpact = ranked.filter((x) => x.relevance > 0).map((x) => x.a);
+  const filler = ranked.filter((x) => x.relevance === 0).map((x) => x.a);
+  articles = [...withImpact, ...filler].slice(0, 24);
+
+  // Aggregated impact boards
+  const countryAgg = {};
+  const industryAgg = {};
+  const stockAgg = {};
+  for (const a of articles) {
+    for (const c of a.countries) {
+      const k = c.country;
+      if (!countryAgg[k]) countryAgg[k] = { ...c, count: 0, score: 0 };
+      countryAgg[k].count += 1;
+      countryAgg[k].score += a.sentimentScore;
+    }
+    for (const i of a.industries) {
+      const k = `${i.sector}|${i.industry}`;
+      if (!industryAgg[k]) industryAgg[k] = { ...i, count: 0, score: 0 };
+      industryAgg[k].count += 1;
+      industryAgg[k].score += a.sentimentScore;
+    }
+    for (const s of a.stocks) {
+      const k = s.symbol;
+      if (!stockAgg[k]) stockAgg[k] = { ...s, count: 0, score: 0 };
+      stockAgg[k].count += 1;
+      stockAgg[k].score += a.sentimentScore;
+    }
+  }
+
+  const finalize = (arr) =>
+    arr
+      .map((x) => ({
+        ...x,
+        bias: x.score > 1 ? "bullish" : x.score < -1 ? "bearish" : "neutral",
+        impact: impactLabel(x.score > 1 ? "bullish" : x.score < -1 ? "bearish" : "neutral"),
+      }))
+      .sort((a, b) => b.count - a.count || Math.abs(b.score) - Math.abs(a.score));
+
+  const data = {
+    source,
+    updatedAt: Date.now(),
+    count: articles.length,
+    disclaimer:
+      "Heuristic impact model for education only — not financial advice. Scores come from keyword sentiment and entity matching.",
+    articles,
+    countryImpacts: finalize(Object.values(countryAgg)).slice(0, 8),
+    industryImpacts: finalize(Object.values(industryAgg)).slice(0, 8),
+    stockImpacts: finalize(Object.values(stockAgg)).slice(0, 12),
+  };
+  newsCache.ts = Date.now();
+  newsCache.data = data;
   return data;
 }
 
@@ -596,6 +1206,371 @@ function macd(values, fast = 12, slow = 26, signalPeriod = 9) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Candlestick pattern analysis                                              */
+/* -------------------------------------------------------------------------- */
+
+function candleParts(c) {
+  const body = Math.abs(c.close - c.open);
+  const range = Math.max(c.high - c.low, 1e-12);
+  const upper = c.high - Math.max(c.open, c.close);
+  const lower = Math.min(c.open, c.close) - c.low;
+  const bullish = c.close >= c.open;
+  return {
+    body,
+    range,
+    upper,
+    lower,
+    bullish,
+    bodyRatio: body / range,
+    upperRatio: upper / range,
+    lowerRatio: lower / range,
+  };
+}
+
+function avgBody(candles, n = 14) {
+  const slice = candles.slice(-Math.min(n, candles.length));
+  if (!slice.length) return 0;
+  return (
+    slice.reduce((s, c) => s + Math.abs(c.close - c.open), 0) / slice.length
+  );
+}
+
+/** Rough local trend: +1 up, -1 down, 0 flat — based on last ~8 closes. */
+function localTrend(closes, lookback = 8) {
+  if (closes.length < lookback + 1) return 0;
+  const a = closes[closes.length - 1];
+  const b = closes[closes.length - 1 - lookback];
+  const pct = b ? ((a - b) / b) * 100 : 0;
+  if (pct > 1.5) return 1;
+  if (pct < -1.5) return -1;
+  return 0;
+}
+
+/**
+ * Detect recent candlestick patterns on the latest bars.
+ * Returns { patterns: [{ name, bias, strength, bars, text }], scoreDelta }
+ * bias: "bullish" | "bearish" | "neutral"
+ * strength: 1 (weak) .. 3 (strong)
+ */
+function detectCandlePatterns(candles) {
+  const patterns = [];
+  if (!candles || candles.length < 3) {
+    return { patterns, scoreDelta: 0 };
+  }
+
+  const n = candles.length;
+  const c0 = candles[n - 1]; // latest
+  const c1 = candles[n - 2];
+  const c2 = candles[n - 3];
+  const p0 = candleParts(c0);
+  const p1 = candleParts(c1);
+  const p2 = candleParts(c2);
+  const avg = avgBody(candles);
+  const closes = candles.map((c) => c.close);
+  const trend = localTrend(closes);
+
+  const push = (name, bias, strength, bars, text) => {
+    patterns.push({ name, bias, strength, bars, text });
+  };
+
+  // --- Single-candle ---
+  const isDoji = p0.bodyRatio < 0.1 || (avg > 0 && p0.body < avg * 0.15);
+  if (isDoji) {
+    if (p0.lowerRatio > 0.6 && p0.upperRatio < 0.15) {
+      push(
+        "Dragonfly Doji",
+        trend === 1 ? "bearish" : "bullish",
+        2,
+        1,
+        "Dragonfly Doji — long lower shadow; often a reversal hint after a decline."
+      );
+    } else if (p0.upperRatio > 0.6 && p0.lowerRatio < 0.15) {
+      push(
+        "Gravestone Doji",
+        trend === -1 ? "bullish" : "bearish",
+        2,
+        1,
+        "Gravestone Doji — long upper shadow; often a reversal hint after a rally."
+      );
+    } else {
+      push(
+        "Doji",
+        "neutral",
+        1,
+        1,
+        "Doji — open≈close; indecision / possible pause in the trend."
+      );
+    }
+  }
+
+  // Hammer / Hanging man: small body near top, long lower wick
+  if (
+    p0.lowerRatio >= 0.6 &&
+    p0.upperRatio <= 0.15 &&
+    p0.bodyRatio <= 0.35 &&
+    !isDoji
+  ) {
+    if (trend === -1) {
+      push(
+        "Hammer",
+        "bullish",
+        3,
+        1,
+        "Hammer after a decline — buyers stepped in; classic bullish reversal cue."
+      );
+    } else if (trend === 1) {
+      push(
+        "Hanging Man",
+        "bearish",
+        2,
+        1,
+        "Hanging Man after a rally — possible bull exhaustion / bearish reversal."
+      );
+    } else {
+      push(
+        "Hammer-like",
+        "bullish",
+        1,
+        1,
+        "Long lower shadow candle — mild bullish rejection of lower prices."
+      );
+    }
+  }
+
+  // Inverted hammer / Shooting star: small body near bottom, long upper wick
+  if (
+    p0.upperRatio >= 0.6 &&
+    p0.lowerRatio <= 0.15 &&
+    p0.bodyRatio <= 0.35 &&
+    !isDoji
+  ) {
+    if (trend === 1) {
+      push(
+        "Shooting Star",
+        "bearish",
+        3,
+        1,
+        "Shooting Star after a rally — sellers rejected highs; bearish reversal cue."
+      );
+    } else if (trend === -1) {
+      push(
+        "Inverted Hammer",
+        "bullish",
+        2,
+        1,
+        "Inverted Hammer after a decline — possible bullish reversal attempt."
+      );
+    } else {
+      push(
+        "Shooting Star-like",
+        "bearish",
+        1,
+        1,
+        "Long upper shadow — mild bearish rejection of higher prices."
+      );
+    }
+  }
+
+  // Marubozu: almost no wicks, strong directional body
+  if (p0.bodyRatio >= 0.85 && avg > 0 && p0.body >= avg * 0.9) {
+    if (p0.bullish) {
+      push(
+        "Bullish Marubozu",
+        "bullish",
+        2,
+        1,
+        "Bullish Marubozu — strong close near the high with little wick; buying pressure."
+      );
+    } else {
+      push(
+        "Bearish Marubozu",
+        "bearish",
+        2,
+        1,
+        "Bearish Marubozu — strong close near the low with little wick; selling pressure."
+      );
+    }
+  }
+
+  // --- Two-candle ---
+  // Engulfing
+  const engulfs =
+    Math.min(c0.open, c0.close) < Math.min(c1.open, c1.close) &&
+    Math.max(c0.open, c0.close) > Math.max(c1.open, c1.close) &&
+    p0.body > p1.body * 1.05;
+  if (engulfs && p0.bullish && !p1.bullish) {
+    push(
+      "Bullish Engulfing",
+      "bullish",
+      3,
+      2,
+      "Bullish Engulfing — latest green candle fully wraps the prior red body."
+    );
+  } else if (engulfs && !p0.bullish && p1.bullish) {
+    push(
+      "Bearish Engulfing",
+      "bearish",
+      3,
+      2,
+      "Bearish Engulfing — latest red candle fully wraps the prior green body."
+    );
+  }
+
+  // Harami (inside bar body)
+  const inside =
+    Math.min(c0.open, c0.close) > Math.min(c1.open, c1.close) &&
+    Math.max(c0.open, c0.close) < Math.max(c1.open, c1.close) &&
+    p0.body < p1.body * 0.7;
+  if (inside && !p1.bullish && p0.bullish) {
+    push(
+      "Bullish Harami",
+      "bullish",
+      2,
+      2,
+      "Bullish Harami — small green body inside prior red body; possible bottoming."
+    );
+  } else if (inside && p1.bullish && !p0.bullish) {
+    push(
+      "Bearish Harami",
+      "bearish",
+      2,
+      2,
+      "Bearish Harami — small red body inside prior green body; possible topping."
+    );
+  }
+
+  // Piercing line / Dark cloud cover
+  const mid1 = (c1.open + c1.close) / 2;
+  if (
+    !p1.bullish &&
+    p0.bullish &&
+    c0.open < c1.close &&
+    c0.close > mid1 &&
+    c0.close < c1.open
+  ) {
+    push(
+      "Piercing Line",
+      "bullish",
+      2,
+      2,
+      "Piercing Line — gap-down open then close back above midpoint of prior red candle."
+    );
+  }
+  if (
+    p1.bullish &&
+    !p0.bullish &&
+    c0.open > c1.close &&
+    c0.close < mid1 &&
+    c0.close > c1.open
+  ) {
+    push(
+      "Dark Cloud Cover",
+      "bearish",
+      2,
+      2,
+      "Dark Cloud Cover — gap-up open then close back below midpoint of prior green candle."
+    );
+  }
+
+  // --- Three-candle ---
+  // Morning star / Evening star
+  const smallMiddle = p1.body <= avg * 0.45 || p1.bodyRatio < 0.3;
+  if (
+    !p2.bullish &&
+    smallMiddle &&
+    p0.bullish &&
+    c0.close > midOf(c2) &&
+    c1.close < c2.close
+  ) {
+    push(
+      "Morning Star",
+      "bullish",
+      3,
+      3,
+      "Morning Star — bearish candle, small indecision, then strong bullish close."
+    );
+  }
+  if (
+    p2.bullish &&
+    smallMiddle &&
+    !p0.bullish &&
+    c0.close < midOf(c2) &&
+    c1.close > c2.close
+  ) {
+    push(
+      "Evening Star",
+      "bearish",
+      3,
+      3,
+      "Evening Star — bullish candle, small indecision, then strong bearish close."
+    );
+  }
+
+  // Three white soldiers / three black crows
+  if (
+    p0.bullish &&
+    p1.bullish &&
+    p2.bullish &&
+    c0.close > c1.close &&
+    c1.close > c2.close &&
+    c0.open > c2.open &&
+    p0.bodyRatio > 0.45 &&
+    p1.bodyRatio > 0.45 &&
+    p2.bodyRatio > 0.45
+  ) {
+    push(
+      "Three White Soldiers",
+      "bullish",
+      3,
+      3,
+      "Three White Soldiers — three rising green closes; strong short-term bullish continuation."
+    );
+  }
+  if (
+    !p0.bullish &&
+    !p1.bullish &&
+    !p2.bullish &&
+    c0.close < c1.close &&
+    c1.close < c2.close &&
+    c0.open < c2.open &&
+    p0.bodyRatio > 0.45 &&
+    p1.bodyRatio > 0.45 &&
+    p2.bodyRatio > 0.45
+  ) {
+    push(
+      "Three Black Crows",
+      "bearish",
+      3,
+      3,
+      "Three Black Crows — three falling red closes; strong short-term bearish continuation."
+    );
+  }
+
+  // Deduplicate by name (keep strongest)
+  const byName = new Map();
+  for (const p of patterns) {
+    const prev = byName.get(p.name);
+    if (!prev || p.strength > prev.strength) byName.set(p.name, p);
+  }
+  const unique = [...byName.values()];
+
+  // Score: strength 1/2/3 → ±6 / ±10 / ±14, neutrals skip; cap total ±28
+  let scoreDelta = 0;
+  for (const p of unique) {
+    if (p.bias === "neutral") continue;
+    const w = p.strength === 3 ? 14 : p.strength === 2 ? 10 : 6;
+    scoreDelta += p.bias === "bullish" ? w : -w;
+  }
+  scoreDelta = Math.max(-28, Math.min(28, scoreDelta));
+
+  return { patterns: unique, scoreDelta };
+}
+
+function midOf(c) {
+  return (c.open + c.close) / 2;
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Short-term signal engine                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -616,12 +1591,14 @@ function analyze(candles) {
       ? ((last - closes[closes.length - 6]) / closes[closes.length - 6]) * 100
       : null;
 
+  const candle = detectCandlePatterns(candles);
+
   const reasons = [];
   let score = 0; // -100 .. +100
 
   if (sma10 != null && sma20 != null) {
     if (sma10 > sma20) {
-      score += 22;
+      score += 20;
       reasons.push({
         signal: "bullish",
         text: `SMA10 (${sma10.toFixed(2)}) is above SMA20 (${sma20.toFixed(
@@ -629,7 +1606,7 @@ function analyze(candles) {
         )}) — short-term uptrend.`,
       });
     } else {
-      score -= 22;
+      score -= 20;
       reasons.push({
         signal: "bearish",
         text: `SMA10 (${sma10.toFixed(2)}) is below SMA20 (${sma20.toFixed(
@@ -641,13 +1618,13 @@ function analyze(candles) {
 
   if (sma20 != null) {
     if (last > sma20) {
-      score += 12;
+      score += 10;
       reasons.push({
         signal: "bullish",
         text: `Price is above SMA20 — buyers in control.`,
       });
     } else {
-      score -= 12;
+      score -= 10;
       reasons.push({
         signal: "bearish",
         text: `Price is below SMA20 — sellers in control.`,
@@ -673,25 +1650,25 @@ function analyze(candles) {
 
   if (rsi14 != null) {
     if (rsi14 < 30) {
-      score += 20;
+      score += 18;
       reasons.push({
         signal: "bullish",
         text: `RSI ${rsi14.toFixed(1)} is oversold (<30) — potential bounce.`,
       });
     } else if (rsi14 > 70) {
-      score -= 20;
+      score -= 18;
       reasons.push({
         signal: "bearish",
         text: `RSI ${rsi14.toFixed(1)} is overbought (>70) — pullback risk.`,
       });
     } else if (rsi14 >= 50) {
-      score += 8;
+      score += 7;
       reasons.push({
         signal: "bullish",
         text: `RSI ${rsi14.toFixed(1)} above 50 — positive momentum.`,
       });
     } else {
-      score -= 8;
+      score -= 7;
       reasons.push({
         signal: "bearish",
         text: `RSI ${rsi14.toFixed(1)} below 50 — weak momentum.`,
@@ -701,7 +1678,7 @@ function analyze(candles) {
 
   if (macdData?.macd != null && macdData?.signal != null) {
     if (macdData.hist > 0) {
-      score += 18;
+      score += 16;
       const crossedUp =
         macdData.prevHist != null && macdData.prevHist <= 0 && macdData.hist > 0;
       reasons.push({
@@ -711,7 +1688,7 @@ function analyze(candles) {
           : `MACD is above its signal line — bullish momentum.`,
       });
     } else {
-      score -= 18;
+      score -= 16;
       const crossedDown =
         macdData.prevHist != null && macdData.prevHist >= 0 && macdData.hist < 0;
       reasons.push({
@@ -725,18 +1702,34 @@ function analyze(candles) {
 
   if (roc5 != null) {
     if (roc5 > 0) {
-      score += 8;
+      score += 7;
       reasons.push({
         signal: "bullish",
         text: `Up ${roc5.toFixed(2)}% over the last 5 sessions.`,
       });
     } else {
-      score -= 8;
+      score -= 7;
       reasons.push({
         signal: "bearish",
         text: `Down ${Math.abs(roc5).toFixed(2)}% over the last 5 sessions.`,
       });
     }
+  }
+
+  // Candlestick patterns contribute to score + reasons
+  score += candle.scoreDelta;
+  for (const p of candle.patterns) {
+    reasons.push({
+      signal: p.bias === "neutral" ? "neutral" : p.bias,
+      text: `Candle: ${p.text}`,
+      pattern: p.name,
+    });
+  }
+  if (!candle.patterns.length) {
+    reasons.push({
+      signal: "neutral",
+      text: "Candle: no strong classic pattern on the latest bars.",
+    });
   }
 
   score = Math.max(-100, Math.min(100, score));
@@ -767,8 +1760,13 @@ function analyze(candles) {
       macdSignal: macdData?.signal ?? null,
       macdHist: macdData?.hist ?? null,
       roc5,
+      candleScore: candle.scoreDelta,
     },
-    reasons: reasons.sort((a, b) => (a.signal < b.signal ? -1 : 1)),
+    patterns: candle.patterns,
+    reasons: reasons.sort((a, b) => {
+      const order = { bullish: 0, bearish: 1, neutral: 2 };
+      return (order[a.signal] ?? 9) - (order[b.signal] ?? 9);
+    }),
   };
 }
 
@@ -1154,6 +2152,23 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (pathname === "/api/universe") {
+      const country = (url.searchParams.get("country") || "US").toUpperCase();
+      return sendJson(res, 200, {
+        country,
+        items: getUniverse(country),
+      });
+    }
+
+    if (pathname === "/api/news") {
+      const force = url.searchParams.get("refresh") === "1";
+      if (force) {
+        newsCache.ts = 0;
+        newsCache.data = null;
+      }
+      return sendJson(res, 200, await getNewsAnalysis());
+    }
+
     if (pathname === "/api/me") {
       return sendJson(res, 200, { user: getSessionUser(req) });
     }
@@ -1453,6 +2468,9 @@ const server = http.createServer(async (req, res) => {
         marketState: meta.marketState || "",
         sector: industryProfile?.sector || null,
         industry: industryProfile?.industry || null,
+        marketCap: industryProfile?.marketCap || null,
+        capBucket: industryProfile?.capBucket || null,
+        capLabel: industryProfile?.capLabel || null,
         source,
         price: meta.regularMarketPrice ?? analysis.indicators.price,
         previousClose: meta.chartPreviousClose ?? meta.previousClose ?? null,

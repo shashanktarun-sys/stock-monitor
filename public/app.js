@@ -19,13 +19,20 @@ const state = {
   user: null,
   country: loadCountry(),
   watchlist: [],
+  universe: [],
   quotes: {}, // symbol -> quote payload
   selected: null,
+  page: "market",
+  marketView: "watchlist",
   refreshMs: 30000,
   timer: null,
   recoFilter: "ALL",
+  capFilter: "ALL",
+  sortBy: "symbol",
   chart: loadChartConfig(),
   portfolio: loadPortfolio(),
+  pnlPeriod: loadPnlPeriod(),
+  signalAlerts: loadSignalAlerts(),
 };
 state.watchlist = loadWatchlist(state.country);
 
@@ -48,6 +55,18 @@ function savePortfolio() {
   scheduleServerSync();
 }
 
+function loadSignalAlerts() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey("signalAlerts")));
+    if (saved && typeof saved === "object") return saved;
+  } catch {}
+  return {};
+}
+
+function saveSignalAlerts() {
+  localStorage.setItem(storageKey("signalAlerts"), JSON.stringify(state.signalAlerts));
+}
+
 function buyStock(symbol, qty, price, currency, name, signal, industryInfo) {
   qty = Math.floor(qty);
   if (!(qty > 0) || !(price > 0)) return;
@@ -66,6 +85,7 @@ function buyStock(symbol, qty, price, currency, name, signal, industryInfo) {
   if (industryInfo) {
     if (industryInfo.industry) pos.industry = industryInfo.industry;
     if (industryInfo.sector) pos.sector = industryInfo.sector;
+    if (industryInfo.capLabel) pos.capLabel = industryInfo.capLabel;
   }
   p.positions[symbol] = pos;
   p.trades.unshift({
@@ -79,16 +99,19 @@ function buyStock(symbol, qty, price, currency, name, signal, industryInfo) {
     score: signal ? signal.score : null,
     industry: industryInfo?.industry || pos.industry || null,
     sector: industryInfo?.sector || pos.sector || null,
+    capLabel: industryInfo?.capLabel || pos.capLabel || null,
   });
+  delete state.signalAlerts[symbol];
   savePortfolio();
+  saveSignalAlerts();
 }
 
 function sellStock(symbol, qty, price, currency, signal) {
   const p = state.portfolio;
   const pos = p.positions[symbol];
-  if (!pos) return;
+  if (!pos) return null;
   qty = Math.min(Math.floor(qty), pos.qty);
-  if (!(qty > 0)) return;
+  if (!(qty > 0)) return null;
   const realized = (price - pos.avgCost) * qty;
   p.realized[currency] = (p.realized[currency] || 0) + realized;
   pos.qty -= qty;
@@ -104,7 +127,130 @@ function sellStock(symbol, qty, price, currency, signal) {
     score: signal ? signal.score : null,
   });
   if (pos.qty <= 0) delete p.positions[symbol];
+  if (!p.positions[symbol]) delete state.signalAlerts[symbol];
   savePortfolio();
+  saveSignalAlerts();
+  return { realized, currency, qty, price };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Portfolio P&L period                                                      */
+/* -------------------------------------------------------------------------- */
+
+function loadPnlPeriod() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey("pnlPeriod")));
+    if (saved && saved.key) {
+      return {
+        key: saved.key,
+        from: saved.from || "",
+        to: saved.to || "",
+      };
+    }
+  } catch {}
+  return { key: "all", from: "", to: "" };
+}
+
+function savePnlPeriod() {
+  localStorage.setItem(storageKey("pnlPeriod"), JSON.stringify(state.pnlPeriod));
+}
+
+/** Start-of-local-day ms for a Date. */
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x.getTime();
+}
+
+/** End-of-local-day ms for a Date. */
+function endOfDay(d) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x.getTime();
+}
+
+/**
+ * Resolve selected P&L period to [start, end] ms.
+ * null start/end means unbounded (All).
+ */
+function getPnlRange() {
+  const { key, from, to } = state.pnlPeriod;
+  const now = new Date();
+  if (key === "all") return { start: null, end: null, label: "All time" };
+  if (key === "1d") {
+    return { start: startOfDay(now), end: endOfDay(now), label: "Today" };
+  }
+  if (key === "7d" || key === "30d" || key === "90d") {
+    const days = key === "7d" ? 7 : key === "30d" ? 30 : 90;
+    const start = startOfDay(new Date(now.getTime() - (days - 1) * 86400000));
+    return { start, end: endOfDay(now), label: `Last ${days} days` };
+  }
+  if (key === "ytd") {
+    return {
+      start: startOfDay(new Date(now.getFullYear(), 0, 1)),
+      end: endOfDay(now),
+      label: `YTD ${now.getFullYear()}`,
+    };
+  }
+  if (key === "custom") {
+    if (!from && !to) return { start: null, end: null, label: "Custom (pick dates)" };
+    const start = from ? startOfDay(new Date(from + "T00:00:00")) : null;
+    const end = to ? endOfDay(new Date(to + "T00:00:00")) : endOfDay(now);
+    const label =
+      (from || "…") + " → " + (to || "today");
+    return { start, end, label };
+  }
+  return { start: null, end: null, label: "All time" };
+}
+
+function tradeInRange(t, start, end) {
+  if (start != null && t.ts < start) return false;
+  if (end != null && t.ts > end) return false;
+  return true;
+}
+
+/** Realized P&L + trade stats for sells in the period, per currency. */
+function periodStats(trades, start, end) {
+  const byCcy = {};
+  let sells = 0;
+  let buys = 0;
+  let wins = 0;
+  let losses = 0;
+  for (const t of trades) {
+    if (!tradeInRange(t, start, end)) continue;
+    if (t.side === "BUY") buys += 1;
+    if (t.side !== "SELL") continue;
+    sells += 1;
+    const c = t.currency || "USD";
+    if (!byCcy[c]) byCcy[c] = { realized: 0, sells: 0, wins: 0, losses: 0 };
+    const r = Number(t.realized) || 0;
+    byCcy[c].realized += r;
+    byCcy[c].sells += 1;
+    if (r > 0) {
+      byCcy[c].wins += 1;
+      wins += 1;
+    } else if (r < 0) {
+      byCcy[c].losses += 1;
+      losses += 1;
+    }
+  }
+  return { byCcy, sells, buys, wins, losses };
+}
+
+function syncPnlPeriodUI() {
+  const bar = document.getElementById("pnlPeriodBar");
+  if (!bar) return;
+  bar.querySelectorAll(".pnl-period-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.period === state.pnlPeriod.key);
+  });
+  const custom = document.getElementById("pnlCustomRange");
+  if (custom) {
+    custom.classList.toggle("hidden", state.pnlPeriod.key !== "custom");
+  }
+  const fromEl = document.getElementById("pnlFrom");
+  const toEl = document.getElementById("pnlTo");
+  if (fromEl && state.pnlPeriod.from) fromEl.value = state.pnlPeriod.from;
+  if (toEl && state.pnlPeriod.to) toEl.value = state.pnlPeriod.to;
 }
 
 function loadChartConfig() {
@@ -326,6 +472,7 @@ async function syncOnLogin() {
     state.watchlist = loadWatchlist(state.country);
     state.chart = loadChartConfig();
     state.portfolio = loadPortfolio();
+    state.pnlPeriod = loadPnlPeriod();
     await pushServerData();
   }
 }
@@ -337,13 +484,21 @@ async function syncOnLogin() {
 const el = {
   search: document.getElementById("search"),
   suggestions: document.getElementById("suggestions"),
+  marketPage: document.getElementById("marketPage"),
+  portfolioPage: document.getElementById("portfolioPage"),
+  newsPage: document.getElementById("newsPage"),
   country: document.getElementById("country"),
+  marketHours: document.getElementById("marketHours"),
   interval: document.getElementById("interval"),
   status: document.getElementById("status"),
   watchlist: document.getElementById("watchlist"),
   recoFilter: document.getElementById("recoFilter"),
+  capFilter: document.getElementById("capFilter"),
+  sortFilter: document.getElementById("sortFilter"),
   filterCount: document.getElementById("filterCount"),
   refreshAll: document.getElementById("refreshAll"),
+  tabWatchlist: document.getElementById("tabWatchlist"),
+  tabAllStocks: document.getElementById("tabAllStocks"),
   emptyState: document.getElementById("emptyState"),
   detailContent: document.getElementById("detailContent"),
   gainersList: document.getElementById("gainersList"),
@@ -359,11 +514,27 @@ const el = {
   portfolioSummary: document.getElementById("portfolioSummary"),
   portfolioHoldings: document.getElementById("portfolioHoldings"),
   tradeHistory: document.getElementById("tradeHistory"),
+  tradeHistoryMeta: document.getElementById("tradeHistoryMeta"),
   portfolioReset: document.getElementById("portfolioReset"),
   portfolioPanel: document.getElementById("portfolioPanel"),
   portfolioTraderType: document.getElementById("portfolioTraderType"),
+  pnlPeriodBar: document.getElementById("pnlPeriodBar"),
+  pnlCustomRange: document.getElementById("pnlCustomRange"),
+  pnlFrom: document.getElementById("pnlFrom"),
+  pnlTo: document.getElementById("pnlTo"),
+  pnlCustomApply: document.getElementById("pnlCustomApply"),
+  navMarket: document.getElementById("navMarket"),
   navPortfolio: document.getElementById("navPortfolio"),
+  navNews: document.getElementById("navNews"),
   navPnl: document.getElementById("navPnl"),
+  newsPanel: document.getElementById("newsPanel"),
+  newsRefresh: document.getElementById("newsRefresh"),
+  newsMeta: document.getElementById("newsMeta"),
+  newsCountryBoard: document.getElementById("newsCountryBoard"),
+  newsIndustryBoard: document.getElementById("newsIndustryBoard"),
+  newsStockBoard: document.getElementById("newsStockBoard"),
+  newsFeed: document.getElementById("newsFeed"),
+  enableAlertsBtn: document.getElementById("enableAlertsBtn"),
   signInNav: document.getElementById("signInNav"),
   userChip: document.getElementById("userChip"),
   userAvatar: document.getElementById("userAvatar"),
@@ -461,11 +632,139 @@ const el = {
   profileSignOut: document.getElementById("profileSignOut"),
 };
 
+function getInitialPage() {
+  const h = window.location.hash;
+  if (h === "#portfolio") return "portfolio";
+  if (h === "#news") return "news";
+  return "market";
+}
+
+function setPage(page, pushHash = true) {
+  if (page === "portfolio") state.page = "portfolio";
+  else if (page === "news") state.page = "news";
+  else state.page = "market";
+  el.marketPage?.classList.toggle("hidden", state.page !== "market");
+  el.portfolioPage?.classList.toggle("hidden", state.page !== "portfolio");
+  el.newsPage?.classList.toggle("hidden", state.page !== "news");
+  el.navMarket?.classList.toggle("active", state.page === "market");
+  el.navPortfolio?.classList.toggle("active", state.page === "portfolio");
+  el.navNews?.classList.toggle("active", state.page === "news");
+  if (pushHash) {
+    const hash =
+      state.page === "portfolio" ? "#portfolio" : state.page === "news" ? "#news" : "#market";
+    if (window.location.hash !== hash) {
+      window.history.replaceState(null, "", hash);
+    }
+  }
+  if (state.page === "news") refreshNews();
+}
+
+function updateAlertsUI() {
+  if (!el.enableAlertsBtn) return;
+  const supported = "Notification" in window;
+  const permission = supported ? Notification.permission : "denied";
+  el.enableAlertsBtn.classList.toggle("hidden", !supported || permission === "granted");
+  if (permission === "denied") {
+    el.enableAlertsBtn.textContent = "🔕 Alerts blocked";
+    el.enableAlertsBtn.disabled = true;
+    el.enableAlertsBtn.title = "Browser notifications are blocked for this site.";
+  } else {
+    el.enableAlertsBtn.textContent = "🔔 Enable alerts";
+    el.enableAlertsBtn.disabled = false;
+    el.enableAlertsBtn.title = "Enable browser alerts for opposite signal changes on held stocks.";
+  }
+}
+
+function isBullishSignal(sig) {
+  return sig === "BUY" || sig === "STRONG BUY";
+}
+
+function isBearishSignal(sig) {
+  return sig === "SELL" || sig === "STRONG SELL";
+}
+
+function signalIsOpposite(buySignal, currentSignal) {
+  return (
+    (isBullishSignal(buySignal) && isBearishSignal(currentSignal)) ||
+    (isBearishSignal(buySignal) && isBullishSignal(currentSignal))
+  );
+}
+
+async function sendBrowserNotification(title, body, tag) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return false;
+  try {
+    if ("serviceWorker" in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) {
+        await reg.showNotification(title, {
+          body,
+          tag,
+          badge: "/icons/icon-1024.png",
+          icon: "/icons/icon-1024.png",
+        });
+        return true;
+      }
+    }
+    new Notification(title, {
+      body,
+      tag,
+      icon: "/icons/icon-1024.png",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function maybeNotifySignalReversal() {
+  const positions = state.portfolio.positions || {};
+  let dirty = false;
+  for (const [symbol, pos] of Object.entries(positions)) {
+    const currentSignal = state.quotes[symbol]?.analysis?.recommendation || null;
+    const buySignal = pos.buySignal || null;
+    if (!buySignal || !currentSignal) continue;
+
+    const key = `${buySignal}=>${currentSignal}`;
+    if (signalIsOpposite(buySignal, currentSignal)) {
+      if (state.signalAlerts[symbol] !== key) {
+        const body =
+          `${symbol.replace(".NS", "")} flipped from your buy-time ${buySignal} signal to ${currentSignal}. ` +
+          `Current price: ${money(state.quotes[symbol]?.price, pos.currency)}.`;
+        const sent = await sendBrowserNotification("Pulse signal reversal", body, `signal-${symbol}`);
+        if (!sent) {
+          showTradeToast(
+            `Alert: ${symbol.replace(".NS", "")} moved from <b>${buySignal}</b> to <b>${currentSignal}</b>.`
+          );
+        }
+        state.signalAlerts[symbol] = key;
+        dirty = true;
+      }
+    } else if (state.signalAlerts[symbol]) {
+      delete state.signalAlerts[symbol];
+      dirty = true;
+    }
+  }
+  if (dirty) saveSignalAlerts();
+}
+
+el.navMarket?.addEventListener("click", () => setPage("market"));
 el.navPortfolio.addEventListener("click", () => {
-  el.portfolioPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  setPage("portfolio");
   el.portfolioPanel.classList.add("flash");
   setTimeout(() => el.portfolioPanel.classList.remove("flash"), 1200);
 });
+el.navNews?.addEventListener("click", () => setPage("news"));
+el.enableAlertsBtn?.addEventListener("click", async () => {
+  if (!("Notification" in window)) return;
+  try {
+    await Notification.requestPermission();
+  } catch {}
+  updateAlertsUI();
+  if (Notification.permission === "granted") {
+    maybeNotifySignalReversal();
+  }
+});
+window.addEventListener("hashchange", () => setPage(getInitialPage(), false));
 
 /* -------------------------------------------------------------------------- */
 /*  Formatting helpers                                                        */
@@ -495,6 +794,164 @@ const signColor = (n) => (n > 0 ? "up" : n < 0 ? "down" : "");
 
 const arrow = (n) => (n > 0 ? "▲" : n < 0 ? "▼" : "•");
 
+/* -------------------------------------------------------------------------- */
+/*  Market open / closed                                                      */
+/* -------------------------------------------------------------------------- */
+
+function getZonedParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  let hour = Number(get("hour"));
+  if (hour === 24) hour = 0; // some engines emit 24:00
+  return {
+    weekday: get("weekday"),
+    minutes: hour * 60 + Number(get("minute")),
+  };
+}
+
+function formatLocalClock(date, timeZone) {
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone,
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function getMarketSession(country, now = new Date()) {
+  const isIndia = country === "IN";
+  const timeZone = isIndia ? "Asia/Kolkata" : "America/New_York";
+  const { weekday, minutes } = getZonedParts(now, timeZone);
+  const weekend = weekday === "Sat" || weekday === "Sun";
+  const open = isIndia ? 9 * 60 + 15 : 9 * 60 + 30;
+  const close = isIndia ? 15 * 60 + 30 : 16 * 60;
+  const preOpen = isIndia ? 9 * 60 : 4 * 60;
+  const postClose = isIndia ? 15 * 60 + 30 : 20 * 60;
+  const label = isIndia ? "NSE" : "NYSE/Nasdaq";
+  const local = formatLocalClock(now, timeZone);
+
+  if (weekend) {
+    return {
+      code: "closed",
+      label: `${label} Closed`,
+      detail: `Weekend · local ${local}`,
+      open: false,
+    };
+  }
+  if (minutes >= open && minutes < close) {
+    return {
+      code: "open",
+      label: `${label} Open`,
+      detail: `Regular session · local ${local}`,
+      open: true,
+    };
+  }
+  if (!isIndia && minutes >= preOpen && minutes < open) {
+    return {
+      code: "pre",
+      label: `${label} Pre-market`,
+      detail: `Before open · local ${local}`,
+      open: false,
+    };
+  }
+  if (!isIndia && minutes >= close && minutes < postClose) {
+    return {
+      code: "post",
+      label: `${label} After-hours`,
+      detail: `After close · local ${local}`,
+      open: false,
+    };
+  }
+  return {
+    code: "closed",
+    label: `${label} Closed`,
+    detail: minutes < open ? `Opens soon · local ${local}` : `Closed · local ${local}`,
+    open: false,
+  };
+}
+
+function yahooStateLabel(state) {
+  const s = String(state || "").toUpperCase();
+  if (!s) return null;
+  if (s === "REGULAR") return "Live: Open";
+  if (s === "PRE" || s === "PREPRE") return "Live: Pre-market";
+  if (s === "POST" || s === "POSTPOST") return "Live: After-hours";
+  if (s === "CLOSED") return "Live: Closed";
+  if (s === "SIMULATED") return "Simulated";
+  return `Live: ${state}`;
+}
+
+function updateMarketHoursUI() {
+  if (!el.marketHours) return;
+  const session = getMarketSession(state.country);
+  el.marketHours.textContent = session.label;
+  el.marketHours.className = `market-hours ${session.code}`;
+  el.marketHours.title = session.detail;
+}
+
+function marketStateBadge(q) {
+  const session = getMarketSession(
+    q.symbol?.endsWith(".NS") || q.currency === "INR" ? "IN" : "US"
+  );
+  const live = yahooStateLabel(q.marketState);
+  const text = live || session.label;
+  const code =
+    q.marketState === "REGULAR"
+      ? "open"
+      : q.marketState === "PRE" || q.marketState === "PREPRE"
+        ? "pre"
+        : q.marketState === "POST" || q.marketState === "POSTPOST"
+          ? "post"
+          : session.code;
+  return `<span class="market-hours inline ${code}" title="${escapeAttr(
+    session.detail
+  )}">${text}</span>`;
+}
+
+function formatMarketCap(n, ccy = "USD") {
+  if (!(n > 0)) return "—";
+  const abs = Math.abs(n);
+  const unit =
+    abs >= 1e12
+      ? { value: n / 1e12, suffix: "T" }
+      : abs >= 1e9
+        ? { value: n / 1e9, suffix: "B" }
+        : abs >= 1e6
+          ? { value: n / 1e6, suffix: "M" }
+          : { value: n, suffix: "" };
+  return `${CCY_SYMBOL[ccy] || ""}${fmt(unit.value, unit.value >= 100 ? 0 : unit.value >= 10 ? 1 : 2)}${unit.suffix}`;
+}
+
+function escapeAttr(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+const INDICATOR_INFO = {
+  "Cap class": "Company size bucket based on market capitalization: Large Cap, Mid Cap, or Small Cap.",
+  "Market cap": "Market capitalization = current share price multiplied by total shares outstanding. It estimates the company's total market value.",
+  "RSI (14)": "Relative Strength Index over 14 periods. Below 30 often signals oversold conditions, above 70 often signals overbought conditions.",
+  "SMA 10": "10-period Simple Moving Average. The average closing price over the last 10 candles.",
+  "SMA 20": "20-period Simple Moving Average. Often used to judge the short-term trend and dynamic support/resistance.",
+  "SMA 50": "50-period Simple Moving Average. A broader trend reference than SMA 10 or SMA 20.",
+  MACD: "Moving Average Convergence Divergence. Measures momentum using the gap between the 12-period and 26-period EMAs.",
+  "MACD Signal": "9-period EMA of the MACD line. MACD crossing above it is commonly read as bullish, below it as bearish.",
+  "MACD Hist": "MACD histogram. Shows the distance between MACD and its signal line; growing bars can suggest strengthening momentum.",
+  "5-day ROC": "Rate of Change over 5 periods. Shows how much price has moved in percentage terms versus 5 candles ago.",
+  "Candle score": "Candlestick-pattern contribution to the final Pulse signal. Bullish patterns add points, bearish patterns subtract points.",
+  "EMA 9": "9-period Exponential Moving Average. Gives more weight to recent prices than an SMA.",
+  Bollinger:
+    "Bollinger Bands use a moving average with upper and lower bands based on volatility. Price near the upper band can mean strength; near the lower band can mean weakness or possible mean reversion.",
+};
+
 const sourceTag = (source) =>
   source === "simulated"
     ? `<span class="source-tag sim" title="Live feed unreachable — showing simulated demo data">SIMULATED</span>`
@@ -511,10 +968,35 @@ async function fetchQuote(symbol) {
   return data;
 }
 
+async function fetchUniverse(country) {
+  const res = await fetch(`/api/universe?country=${encodeURIComponent(country)}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Request failed");
+  return data.items || [];
+}
+
+async function refreshUniverse() {
+  try {
+    state.universe = await fetchUniverse(state.country);
+  } catch {
+    state.universe = [];
+  }
+}
+
+function updateMarketTabs() {
+  el.tabWatchlist?.classList.toggle("on", state.marketView === "watchlist");
+  el.tabAllStocks?.classList.toggle("on", state.marketView === "all");
+}
+
 async function refreshAll() {
+  updateMarketHoursUI();
   el.status.textContent = "Updating…";
   const symbols = Array.from(
-    new Set([...state.watchlist, ...Object.keys(state.portfolio.positions)])
+    new Set([
+      ...state.watchlist,
+      ...Object.keys(state.portfolio.positions),
+      ...(state.marketView === "all" ? state.universe.map((it) => it.symbol) : []),
+    ])
   );
   const results = await Promise.allSettled(symbols.map((s) => fetchQuote(s)));
   results.forEach((r, i) => {
@@ -525,6 +1007,8 @@ async function refreshAll() {
   if (state.selected && state.quotes[state.selected]) {
     renderDetail(state.quotes[state.selected]);
   }
+  await maybeNotifySignalReversal();
+  updateMarketHoursUI();
   const now = new Date();
   el.status.textContent = `Updated ${now.toLocaleTimeString()}`;
 }
@@ -544,12 +1028,154 @@ async function refreshMovers() {
     renderMovers(el.losersList, data.losers, "lose");
     if (el.moversMeta) {
       el.moversMeta.textContent = `· scanning ${data.count} ${
-        data.custom ? "custom" : "popular"
+        data.custom ? "custom" : "top"
       } stocks`;
     }
   } catch {
     el.gainersList.innerHTML = `<span class="movers-loading">Unavailable</span>`;
     el.losersList.innerHTML = `<span class="movers-loading">Unavailable</span>`;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  News analyzer                                                             */
+/* -------------------------------------------------------------------------- */
+
+let newsLoading = false;
+
+function newsBiasClass(bias) {
+  return bias === "bullish" ? "up" : bias === "bearish" ? "down" : "neutral";
+}
+
+function renderNewsBoards(data) {
+  const countryHtml =
+    (data.countryImpacts || [])
+      .map(
+        (c) =>
+          `<button type="button" class="news-chip ${newsBiasClass(c.bias)}" title="${escapeAttr(
+            c.impact
+          )}">
+            <b>${c.label}</b>
+            <span>${c.impact}</span>
+            <small>${c.count} stories</small>
+          </button>`
+      )
+      .join("") || `<div class="pf-empty">No clear country themes yet.</div>`;
+
+  const industryHtml =
+    (data.industryImpacts || [])
+      .map(
+        (i) =>
+          `<button type="button" class="news-chip ${newsBiasClass(i.bias)}" title="${escapeAttr(
+            i.why || i.impact
+          )}">
+            <b>${i.industry}</b>
+            <span>${i.sector}</span>
+            <small>${i.impact} · ${i.count}</small>
+          </button>`
+      )
+      .join("") || `<div class="pf-empty">No clear industry themes yet.</div>`;
+
+  const stockHtml =
+    (data.stockImpacts || [])
+      .map(
+        (s) =>
+          `<button type="button" class="news-chip ${newsBiasClass(s.bias)}" data-symbol="${
+            s.symbol
+          }" title="${escapeAttr(s.why || s.impact)}">
+            <b>${s.symbol.replace(".NS", "")}</b>
+            <span>${s.impact}</span>
+            <small>${s.count} hits</small>
+          </button>`
+      )
+      .join("") || `<div class="pf-empty">No stock links detected yet.</div>`;
+
+  if (el.newsCountryBoard) el.newsCountryBoard.innerHTML = countryHtml;
+  if (el.newsIndustryBoard) el.newsIndustryBoard.innerHTML = industryHtml;
+  if (el.newsStockBoard) el.newsStockBoard.innerHTML = stockHtml;
+
+  el.newsStockBoard?.querySelectorAll("[data-symbol]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      addSymbol(btn.dataset.symbol);
+    });
+  });
+}
+
+function renderNewsFeed(articles) {
+  if (!el.newsFeed) return;
+  if (!articles?.length) {
+    el.newsFeed.innerHTML = `<div class="pf-empty">No headlines available right now.</div>`;
+    return;
+  }
+  el.newsFeed.innerHTML = articles
+    .map((a) => {
+      const when = a.publishedAt
+        ? new Date(a.publishedAt).toLocaleString()
+        : "";
+      const countries = (a.countries || [])
+        .map((c) => `<span class="news-tag ${newsBiasClass(c.bias)}">${c.label}: ${c.impact}</span>`)
+        .join("");
+      const industries = (a.industries || [])
+        .map(
+          (i) =>
+            `<span class="news-tag ${newsBiasClass(i.bias)}">${i.industry}: ${i.impact}</span>`
+        )
+        .join("");
+      const stocks = (a.stocks || [])
+        .map(
+          (s) =>
+            `<button type="button" class="news-tag stock ${newsBiasClass(
+              s.bias
+            )}" data-symbol="${s.symbol}">${s.symbol.replace(".NS", "")}: ${s.impact}</button>`
+        )
+        .join("");
+      const link = a.link
+        ? `<a class="news-link" href="${escapeAttr(a.link)}" target="_blank" rel="noopener noreferrer">Open article</a>`
+        : "";
+      return `<article class="news-card">
+        <div class="news-card-top">
+          <span class="news-sentiment ${newsBiasClass(a.sentiment)}">${a.sentiment}</span>
+          <span class="news-pub">${escapeAttr(a.publisher || "")} · ${when}</span>
+        </div>
+        <h3>${escapeAttr(a.title)}</h3>
+        ${a.summary ? `<p>${escapeAttr(a.summary)}</p>` : ""}
+        <div class="news-cascade">
+          <div><span class="news-cascade-label">Country</span>${countries || "<span class='muted-dash'>—</span>"}</div>
+          <div><span class="news-cascade-label">Industry</span>${industries || "<span class='muted-dash'>—</span>"}</div>
+          <div><span class="news-cascade-label">Stocks</span>${stocks || "<span class='muted-dash'>—</span>"}</div>
+        </div>
+        ${link}
+      </article>`;
+    })
+    .join("");
+
+  el.newsFeed.querySelectorAll("[data-symbol]").forEach((btn) => {
+    btn.addEventListener("click", () => addSymbol(btn.dataset.symbol));
+  });
+}
+
+async function refreshNews(force = false) {
+  if (!el.newsFeed || newsLoading) return;
+  newsLoading = true;
+  if (el.newsMeta) el.newsMeta.textContent = "Fetching latest headlines…";
+  try {
+    const res = await fetch(`/api/news${force ? "?refresh=1" : ""}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "News failed");
+    const when = data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : "";
+    if (el.newsMeta) {
+      el.newsMeta.textContent = `${data.count || 0} stories · ${
+        data.source === "simulated" ? "simulated demo feed" : "live Yahoo headlines"
+      } · updated ${when}`;
+    }
+    renderNewsBoards(data);
+    renderNewsFeed(data.articles || []);
+  } catch (err) {
+    if (el.newsMeta) el.newsMeta.textContent = `Could not load news: ${err.message}`;
+    if (el.newsFeed)
+      el.newsFeed.innerHTML = `<div class="pf-empty">News analyzer unavailable right now.</div>`;
+  } finally {
+    newsLoading = false;
   }
 }
 
@@ -847,14 +1473,20 @@ function renderTraderClassification() {
 
 function renderPortfolio() {
   renderTraderClassification();
+  syncPnlPeriodUI();
   const p = state.portfolio;
   const symbols = Object.keys(p.positions);
+  const range = getPnlRange();
+  const stats = periodStats(p.trades || [], range.start, range.end);
+  const isAll = range.start == null && range.end == null && state.pnlPeriod.key === "all";
+
   const currencies = new Set([
     ...symbols.map((s) => p.positions[s].currency),
     ...Object.keys(p.realized).filter((c) => p.realized[c]),
+    ...Object.keys(stats.byCcy),
   ]);
 
-  // Per-currency aggregation
+  // Per-currency aggregation (open positions — mark-to-market now)
   const agg = {};
   currencies.forEach((c) => (agg[c] = { invested: 0, value: 0, upl: 0 }));
   symbols.forEach((sym) => {
@@ -862,26 +1494,30 @@ function renderPortfolio() {
     const price = state.quotes[sym]?.price ?? pos.avgCost;
     const invested = pos.qty * pos.avgCost;
     const value = pos.qty * price;
-    const a = agg[pos.currency];
+    const a = agg[pos.currency] || (agg[pos.currency] = { invested: 0, value: 0, upl: 0 });
     a.invested += invested;
     a.value += value;
     a.upl += value - invested;
   });
 
-  // Summary cards
-  if (!currencies.size) {
+  const hasActivity =
+    symbols.length > 0 ||
+    (p.trades && p.trades.length > 0) ||
+    Object.values(p.realized || {}).some((v) => v);
+
+  if (!hasActivity) {
     el.portfolioSummary.innerHTML = "";
     el.portfolioHoldings.innerHTML = `<div class="pf-empty">You haven't bought any stocks yet. Open a stock and click <b>Buy</b> to start your paper portfolio.</div>`;
     el.tradeHistory.innerHTML = "";
+    if (el.tradeHistoryMeta) el.tradeHistoryMeta.textContent = "";
     updateNavPnl([]);
     return;
   }
 
-  // Nav badge: total P&L + % per currency
+  // Nav badge: all-time total P&L + % per currency
   const navTotals = [...currencies].map((c) => {
     const invested = agg[c]?.invested || 0;
     const total = (agg[c]?.upl || 0) + (p.realized[c] || 0);
-    // Prefer open-position cost basis; if flat, estimate from BUY trade notional.
     let basis = invested;
     if (!(basis > 0)) {
       basis = (p.trades || [])
@@ -896,13 +1532,29 @@ function renderPortfolio() {
   });
   updateNavPnl(navTotals);
 
-  el.portfolioSummary.innerHTML = [...currencies]
-    .map((c) => {
-      const a = agg[c] || { invested: 0, value: 0, upl: 0 };
-      const realized = p.realized[c] || 0;
-      const total = a.upl + realized;
-      const uplPct = a.invested ? (a.upl / a.invested) * 100 : 0;
-      return `
+  const periodBanner = `<div class="pnl-period-banner">
+    Showing <b>${range.label}</b>
+    · ${stats.buys} buy${stats.buys === 1 ? "" : "s"}, ${stats.sells} sell${stats.sells === 1 ? "" : "s"}
+    ${
+      stats.sells
+        ? ` · ${stats.wins} win${stats.wins === 1 ? "" : "s"} / ${stats.losses} loss${stats.losses === 1 ? "" : "es"}`
+        : ""
+    }
+  </div>`;
+
+  el.portfolioSummary.innerHTML =
+    periodBanner +
+    [...currencies]
+      .map((c) => {
+        const a = agg[c] || { invested: 0, value: 0, upl: 0 };
+        const lifetimeRealized = p.realized[c] || 0;
+        const periodRealized = stats.byCcy[c]?.realized || 0;
+        const realized = isAll ? lifetimeRealized : periodRealized;
+        const total = isAll ? a.upl + lifetimeRealized : periodRealized;
+        const uplPct = a.invested ? (a.upl / a.invested) * 100 : 0;
+        const realizedLabel = isAll ? "Realized" : "Period realized";
+        const totalLabel = isAll ? "Total P&L" : "Period P&L";
+        return `
       <div class="pf-card">
         <div class="pf-ccy">${CCY_SYMBOL[c] || ""} ${c}</div>
         <div class="pf-metrics">
@@ -913,16 +1565,33 @@ function renderPortfolio() {
             `${signedMoney(a.upl, c)} (${signedPct(uplPct)})`,
             a.upl >= 0 ? "up" : "down"
           )}
-          ${pfMetric("Realized", signedMoney(realized, c), realized >= 0 ? "up" : "down")}
-          ${pfMetric("Total P&L", signedMoney(total, c), total >= 0 ? "up" : "down")}
+          ${pfMetric(
+            realizedLabel,
+            signedMoney(realized, c),
+            realized >= 0 ? "up" : "down"
+          )}
+          ${pfMetric(
+            totalLabel,
+            signedMoney(total, c),
+            total >= 0 ? "up" : "down"
+          )}
+          ${
+            !isAll
+              ? pfMetric(
+                  "All-time realized",
+                  signedMoney(lifetimeRealized, c),
+                  lifetimeRealized >= 0 ? "up" : "down"
+                )
+              : ""
+          }
         </div>
       </div>`;
-    })
-    .join("");
+      })
+      .join("");
 
   // Holdings
   if (!symbols.length) {
-    el.portfolioHoldings.innerHTML = `<div class="pf-empty">No open positions. Realized results are shown above.</div>`;
+    el.portfolioHoldings.innerHTML = `<div class="pf-empty">No open positions. Realized results for this period are shown above.</div>`;
   } else {
     // Backfill industry/sector from live quotes onto positions when missing.
     let dirty = false;
@@ -936,6 +1605,10 @@ function renderPortfolio() {
       }
       if (!pos.sector && q.sector) {
         pos.sector = q.sector;
+        dirty = true;
+      }
+      if (!pos.capLabel && q.capLabel) {
+        pos.capLabel = q.capLabel;
         dirty = true;
       }
     });
@@ -975,7 +1648,8 @@ function renderPortfolio() {
         const cls = upl >= 0 ? "up" : "down";
         const industry = pos.industry || q?.industry || null;
         const sector = pos.sector || q?.sector || null;
-        const industryLabel = industry || sector || "—";
+        const capLabel = pos.capLabel || q?.capLabel || null;
+        const industryLabel = [industry || sector || null, capLabel].filter(Boolean).join(" · ") || "—";
         const buySig = pos.buySignal
           ? `<span class="badge ${badgeClass(pos.buySignal)}" title="Pulse signal when you bought">${pos.buySignal}${
               pos.buyScore != null ? ` ${pos.buyScore > 0 ? "+" : ""}${pos.buyScore}` : ""
@@ -1020,16 +1694,28 @@ function renderPortfolio() {
     });
   }
 
-  // Trade history (latest 20)
+  // Trade history filtered by period
+  const filtered = (p.trades || []).filter((t) =>
+    tradeInRange(t, range.start, range.end)
+  );
+  if (el.tradeHistoryMeta) {
+    el.tradeHistoryMeta.textContent =
+      filtered.length === (p.trades || []).length
+        ? `(${filtered.length})`
+        : `(${filtered.length} of ${p.trades.length})`;
+  }
   el.tradeHistory.innerHTML =
-    p.trades
-      .slice(0, 20)
+    filtered
+      .slice(0, 50)
       .map((t) => {
         const d = new Date(t.ts);
         const when = d.toLocaleDateString() + " " + d.toLocaleTimeString();
         const extra =
           t.side === "SELL" && t.realized != null
-            ? ` · P&L ${signedMoney(t.realized, t.currency)}`
+            ? ` · P&L <b class="${t.realized >= 0 ? "up" : "down"}">${signedMoney(
+                t.realized,
+                t.currency
+              )}</b>`
             : "";
         const sigBadge = t.signal
           ? `<span class="trade-signal badge ${badgeClass(t.signal)}" title="Pulse signal when this trade was placed">${t.signal}${
@@ -1044,7 +1730,8 @@ function renderPortfolio() {
           <span class="trade-when">${when}</span>
         </div>`;
       })
-      .join("") || `<div class="pf-empty">No trades yet.</div>`;
+      .join("") ||
+    `<div class="pf-empty">No trades in this period.</div>`;
 }
 
 function pfMetric(label, val, cls = "") {
@@ -1095,15 +1782,41 @@ function updateNavPnl(totals) {
 /* -------------------------------------------------------------------------- */
 
 function renderWatchlist() {
+  updateMarketTabs();
+  if (el.sortFilter) el.sortFilter.value = state.sortBy;
   el.watchlist.innerHTML = "";
-  const filter = state.recoFilter;
+  const signalFilter = state.recoFilter;
+  const capFilter = state.capFilter;
   let shown = 0;
   let hidden = 0;
+  let items =
+    state.marketView === "all"
+      ? state.universe
+      : state.watchlist.map((symbol) => ({ symbol, name: null }));
 
-  state.watchlist.forEach((symbol) => {
+  const sortVal = state.sortBy;
+  items = [...items].sort((a, b) => {
+    const qa = state.quotes[a.symbol];
+    const qb = state.quotes[b.symbol];
+    if (sortVal === "symbol") return a.symbol.localeCompare(b.symbol);
+    const av = sortVal.startsWith("price")
+      ? qa?.price ?? Number.NEGATIVE_INFINITY
+      : qa?.analysis?.changePercent ?? Number.NEGATIVE_INFINITY;
+    const bv = sortVal.startsWith("price")
+      ? qb?.price ?? Number.NEGATIVE_INFINITY
+      : qb?.analysis?.changePercent ?? Number.NEGATIVE_INFINITY;
+    if (av === bv) return a.symbol.localeCompare(b.symbol);
+    return sortVal.endsWith("_asc") ? av - bv : bv - av;
+  });
+
+  items.forEach((item) => {
+    const symbol = item.symbol;
     const q = state.quotes[symbol];
-    // Apply the recommendation filter once a quote is loaded.
-    if (filter !== "ALL" && q && q.analysis.recommendation !== filter) {
+    if (signalFilter !== "ALL" && q && q.analysis.recommendation !== signalFilter) {
+      hidden++;
+      return;
+    }
+    if (capFilter !== "ALL" && q && q.capBucket !== capFilter) {
       hidden++;
       return;
     }
@@ -1115,16 +1828,22 @@ function renderWatchlist() {
     if (!q) {
       li.innerHTML = `
         <div><div class="wl-sym">${symbol}</div>
-        <div class="wl-name">Loading…</div></div>
+        <div class="wl-name">${item.name || "Loading…"}</div></div>
         <div class="wl-price">—</div>
-        <button class="wl-remove" title="Remove">✕</button>`;
+        ${
+          state.marketView === "watchlist"
+            ? `<button class="wl-remove" title="Remove">✕</button>`
+            : `<button class="wl-add" title="Add to watchlist">${
+                state.watchlist.includes(symbol) ? "✓" : "+"
+              }</button>`
+        }`;
     } else {
       const a = q.analysis;
       const chgClass = signColor(a.changePercent);
       li.innerHTML = `
         <div>
           <div class="wl-sym">${q.symbol}</div>
-          <div class="wl-name">${q.name}</div>
+          <div class="wl-name">${q.name}${q.capLabel ? ` · ${q.capLabel}` : ""}</div>
         </div>
         <div class="wl-price">${money(q.price, q.currency)}</div>
         <div class="wl-chg ${chgClass}">${arrow(a.changePercent)} ${fmt(
@@ -1133,12 +1852,27 @@ function renderWatchlist() {
         <span class="wl-badge badge ${badgeClass(a.recommendation)}">${
         a.recommendation
       }</span>
-        <button class="wl-remove" title="Remove">✕</button>`;
+        ${
+          state.marketView === "watchlist"
+            ? `<button class="wl-remove" title="Remove">✕</button>`
+            : `<button class="wl-add" title="Add to watchlist">${
+                state.watchlist.includes(symbol) ? "✓" : "+"
+              }</button>`
+        }`;
     }
 
     li.addEventListener("click", (e) => {
       if (e.target.classList.contains("wl-remove")) {
         removeSymbol(symbol);
+        return;
+      }
+      if (e.target.classList.contains("wl-add")) {
+        e.stopPropagation();
+        if (!state.watchlist.includes(symbol)) {
+          state.watchlist.push(symbol);
+          saveWatchlist();
+        }
+        renderWatchlist();
         return;
       }
       selectSymbol(symbol);
@@ -1147,16 +1881,20 @@ function renderWatchlist() {
   });
 
   if (el.filterCount) {
+    const label = state.marketView === "all" ? "market stocks" : "stocks";
     el.filterCount.textContent =
-      filter === "ALL" ? `${shown} stocks` : `${shown} match · ${hidden} hidden`;
+      signalFilter === "ALL" && capFilter === "ALL"
+        ? `${shown} ${label}`
+        : `${shown} match · ${hidden} hidden`;
   }
   if (shown === 0) {
     const li = document.createElement("li");
     li.className = "wl-empty";
-    li.textContent =
-      filter === "ALL"
+    li.textContent = state.marketView === "all"
+      ? "No stocks match the current signal / market-cap filters."
+      : signalFilter === "ALL" && capFilter === "ALL"
         ? "No stocks yet — search above to add."
-        : `No stocks currently rated “${titleCase(filter)}”.`;
+        : "No watchlist stocks match the current filters.";
     el.watchlist.appendChild(li);
   }
 }
@@ -1168,6 +1906,7 @@ function titleCase(s) {
 }
 
 function selectSymbol(symbol) {
+  setPage("market");
   state.selected = symbol;
   renderWatchlist();
   const q = state.quotes[symbol];
@@ -1237,15 +1976,16 @@ function renderDetail(q) {
   const i = a.indicators;
   const chgClass = signColor(a.change);
   const markerPos = (a.score + 100) / 2; // 0..100
+  const companyMeta = [q.exchange, q.currency, q.capLabel || ""]
+    .filter(Boolean)
+    .join(" · ");
 
   el.detailContent.innerHTML = `
     <div class="detail-header">
       <div class="dh-left">
         <h2>${q.symbol} ${sourceTag(q.source)}</h2>
         <p class="company">${q.name}</p>
-        <span class="exch">${q.exchange} · ${q.currency} · ${
-    q.marketState || ""
-  }</span>
+        <span class="exch">${companyMeta} · ${marketStateBadge(q)}</span>
       </div>
       <div class="dh-right">
         <div class="big-price">${money(q.price, q.currency)}</div>
@@ -1301,6 +2041,8 @@ function renderDetail(q) {
     </div>
 
     <div class="ind-grid">
+      ${indCell("Cap class", q.capLabel || "—", q.capBucket === "large" ? "up" : "")}
+      ${indCell("Market cap", formatMarketCap(q.marketCap, q.currency))}
       ${indCell("RSI (14)", fmt(i.rsi14, 1), rsiClass(i.rsi14))}
       ${indCell("SMA 10", money(i.sma10, q.currency))}
       ${indCell("SMA 20", money(i.sma20, q.currency))}
@@ -1317,6 +2059,28 @@ function renderDetail(q) {
         (i.roc5 > 0 ? "+" : "") + fmt(i.roc5) + "%",
         signColor(i.roc5)
       )}
+      ${indCell(
+        "Candle score",
+        (i.candleScore > 0 ? "+" : "") + fmt(i.candleScore ?? 0, 0),
+        signColor(i.candleScore)
+      )}
+    </div>
+
+    <div class="patterns-card">
+      <h3>Candlestick patterns</h3>
+      ${
+        a.patterns && a.patterns.length
+          ? `<div class="pattern-chips">${a.patterns
+              .map(
+                (p) =>
+                  `<span class="pattern-chip ${p.bias}" title="${p.text}">${p.name}<small>${p.bias}</small></span>`
+              )
+              .join("")}</div>
+            <ul class="pattern-list">${a.patterns
+              .map((p) => `<li class="${p.bias}">${p.text}</li>`)
+              .join("")}</ul>`
+          : `<p class="pattern-empty">No strong classic candle pattern on the latest bars.</p>`
+      }
     </div>
 
     <div class="reasons">
@@ -1332,11 +2096,17 @@ function renderDetail(q) {
 
   wireChartControls(q);
   wireTradeControls(q);
-  drawChart(q.candles);
+  drawChart(q.candles, q.analysis?.patterns || []);
 }
 
 function tradeCardHtml(q) {
   const pos = state.portfolio.positions[q.symbol];
+  const realizedOnSymbol = (state.portfolio.trades || [])
+    .filter((t) => t.symbol === q.symbol && t.side === "SELL" && t.realized != null)
+    .reduce((s, t) => s + t.realized, 0);
+  const hasRealized = (state.portfolio.trades || []).some(
+    (t) => t.symbol === q.symbol && t.side === "SELL"
+  );
   let posInfo = `<span class="pos-empty">No position yet</span>`;
   if (pos) {
     const value = pos.qty * q.price;
@@ -1350,7 +2120,9 @@ function tradeCardHtml(q) {
       q.currency
     )}</b></div>
       <div class="pos-row"><span>Industry</span><b>${
-        pos.industry || q.industry || pos.sector || q.sector || "—"
+        [pos.industry || q.industry || pos.sector || q.sector || null, pos.capLabel || q.capLabel || null]
+          .filter(Boolean)
+          .join(" · ") || "—"
       }</b></div>
       <div class="pos-row"><span>Market value</span><b>${money(
         value,
@@ -1361,6 +2133,13 @@ function tradeCardHtml(q) {
       q.currency
     )} (${signedPct(uplPct)})</b></div>
       ${
+        hasRealized
+          ? `<div class="pos-row"><span>Realized P&amp;L</span><b class="${
+              realizedOnSymbol >= 0 ? "up" : "down"
+            }">${signedMoney(realizedOnSymbol, q.currency)}</b></div>`
+          : ""
+      }
+      ${
         pos.buySignal
           ? `<div class="pos-row"><span>Signal at buy</span><b><span class="badge ${badgeClass(
               pos.buySignal
@@ -1369,6 +2148,12 @@ function tradeCardHtml(q) {
             }</span></b></div>`
           : ""
       }`;
+  } else if (hasRealized) {
+    posInfo = `
+      <span class="pos-empty">No open position</span>
+      <div class="pos-row"><span>Realized P&amp;L</span><b class="${
+        realizedOnSymbol >= 0 ? "up" : "down"
+      }">${signedMoney(realizedOnSymbol, q.currency)}</b></div>`;
   }
   return `
     <div class="trade-card">
@@ -1409,26 +2194,40 @@ function wireTradeControls(q) {
     buyStock(q.symbol, qty, q.price, q.currency, q.name, sig, {
       industry: q.industry || null,
       sector: q.sector || null,
+      capLabel: q.capLabel || null,
     });
-    afterTrade(q, "buy", sig);
+    afterTrade(q, "buy", sig, { qty, price: q.price, currency: q.currency });
   });
   sellBtn.addEventListener("click", () => {
     const qty = Math.floor(Number(qtyEl.value) || 0);
     if (qty <= 0) return;
-    sellStock(q.symbol, qty, q.price, q.currency, sig);
-    afterTrade(q, "sell", sig);
+    const result = sellStock(q.symbol, qty, q.price, q.currency, sig);
+    afterTrade(q, "sell", sig, result);
   });
 }
 
-function afterTrade(q, side, sig) {
+function afterTrade(q, side, sig, result) {
   renderPortfolio();
   renderDetail(state.quotes[q.symbol] || q);
-  if (side === "buy" && sig && sig.recommendation) {
+  const short = q.symbol.replace(".NS", "");
+  if (side === "sell" && result && result.realized != null) {
+    setPage("portfolio");
+    const cls = result.realized >= 0 ? "up" : "down";
     showTradeToast(
-      `Bought ${q.symbol.replace(".NS", "")} · Pulse was ` +
-        `<span class="badge ${badgeClass(sig.recommendation)}">${sig.recommendation}${
-          sig.score != null ? ` ${sig.score > 0 ? "+" : ""}${sig.score}` : ""
-        }</span>`
+      `Sold ${result.qty} ${short} · P&amp;L ` +
+        `<b class="${cls}">${signedMoney(result.realized, result.currency)}</b>`
+    );
+    return;
+  }
+  if (side === "buy") {
+    const qty = result?.qty || 0;
+    showTradeToast(
+      `Bought ${qty} ${short}` +
+        (sig && sig.recommendation
+          ? ` · Pulse was <span class="badge ${badgeClass(sig.recommendation)}">${sig.recommendation}${
+              sig.score != null ? ` ${sig.score > 0 ? "+" : ""}${sig.score}` : ""
+            }</span>`
+          : "")
     );
   }
 }
@@ -1457,7 +2256,8 @@ const OVERLAY_COLORS = {
 
 function overlayToggle(key, label) {
   const on = state.chart.overlays[key];
-  return `<button class="tb-toggle ${on ? "on" : ""}" data-overlay="${key}" style="--c:${OVERLAY_COLORS[key]}">
+  const tip = escapeAttr(INDICATOR_INFO[label] || label);
+  return `<button class="tb-toggle ${on ? "on" : ""}" data-overlay="${key}" style="--c:${OVERLAY_COLORS[key]}" title="${tip}" aria-label="${tip}">
     <span class="tb-swatch"></span>${label}
   </button>`;
 }
@@ -1470,7 +2270,7 @@ function wireChartControls(q) {
         .querySelectorAll(".chart-type .seg-btn")
         .forEach((b) => b.classList.toggle("on", b.dataset.type === state.chart.type));
       saveChartConfig();
-      drawChart(q.candles);
+      drawChart(q.candles, q.analysis?.patterns || []);
     });
   });
   el.detailContent.querySelectorAll(".tb-toggle").forEach((btn) => {
@@ -1479,7 +2279,7 @@ function wireChartControls(q) {
       state.chart.overlays[key] = !state.chart.overlays[key];
       btn.classList.toggle("on", state.chart.overlays[key]);
       saveChartConfig();
-      drawChart(q.candles);
+      drawChart(q.candles, q.analysis?.patterns || []);
     });
   });
   const paneSel = el.detailContent.querySelector("#chartPane");
@@ -1488,13 +2288,17 @@ function wireChartControls(q) {
     paneSel.addEventListener("change", () => {
       state.chart.pane = paneSel.value;
       saveChartConfig();
-      drawChart(q.candles);
+      drawChart(q.candles, q.analysis?.patterns || []);
     });
   }
 }
 
 function indCell(k, v, cls = "") {
-  return `<div class="ind-cell"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+  const tip = escapeAttr(INDICATOR_INFO[k] || k);
+  return `<div class="ind-cell" title="${tip}" aria-label="${tip}">
+    <div class="k" title="${tip}">${k}</div>
+    <div class="v ${cls}" title="${tip}">${v}</div>
+  </div>`;
 }
 
 function rsiClass(r) {
@@ -1590,7 +2394,26 @@ function formatVol(v) {
   return String(Math.round(v));
 }
 
-function drawChart(candles) {
+function getChartPatternMarkers(candles, patterns) {
+  if (!candles?.length || !patterns?.length) return [];
+  const n = candles.length;
+  const groups = new Map();
+  for (const p of patterns) {
+    const bars = Math.max(1, Math.min(Number(p.bars) || 1, n));
+    const start = n - bars;
+    const end = n - 1;
+    const bias = p.bias || "neutral";
+    const key = `${start}:${end}:${bias}`;
+    if (!groups.has(key)) groups.set(key, { start, end, bias, names: [] });
+    groups.get(key).names.push(p.name);
+  }
+  return [...groups.values()].map((g) => ({
+    ...g,
+    label: g.names.join(" / "),
+  }));
+}
+
+function drawChart(candles, patterns = []) {
   const canvas = document.getElementById("chart");
   if (!canvas || !candles.length) return;
 
@@ -1613,6 +2436,7 @@ function drawChart(candles) {
   const lows = candles.map((c) => c.low);
   const vols = candles.map((c) => c.volume || 0);
   const times = candles.map((c) => c.t);
+  const patternMarkers = getChartPatternMarkers(candles, patterns);
 
   const plotLeft = pad.l;
   const plotRight = w - pad.r;
@@ -1733,6 +2557,49 @@ function drawChart(candles) {
     ctx.setLineDash([]);
   };
 
+  const drawPatternHighlights = () => {
+    if (!patternMarkers.length) return;
+    const minBandWidth = Math.max(18, (plotRight - plotLeft) / Math.max(n, 16));
+    patternMarkers.forEach((marker, idx) => {
+      const leftEdge =
+        marker.start <= 0 ? plotLeft : (x(marker.start - 1) + x(marker.start)) / 2;
+      const rightEdge =
+        marker.end >= n - 1 ? plotRight : (x(marker.end) + x(marker.end + 1)) / 2;
+      const center = (leftEdge + rightEdge) / 2;
+      const width = Math.max(minBandWidth, rightEdge - leftEdge);
+      const left = Math.max(plotLeft, center - width / 2);
+      const right = Math.min(plotRight, center + width / 2);
+      const color =
+        marker.bias === "bullish"
+          ? "35,201,139"
+          : marker.bias === "bearish"
+            ? "255,92,114"
+            : "139,150,179";
+
+      ctx.fillStyle = `rgba(${color}, 0.10)`;
+      ctx.fillRect(left, plotTop, right - left, priceBottom - plotTop);
+
+      ctx.strokeStyle = `rgba(${color}, 0.55)`;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(left + 0.5, plotTop + 0.5, Math.max(1, right - left - 1), priceBottom - plotTop - 1);
+      ctx.setLineDash([]);
+
+      const label = marker.label.length > 26 ? marker.label.slice(0, 25) + "..." : marker.label;
+      const tagY = plotTop + 8 + idx * 18;
+      const padX = 6;
+      ctx.font = "11px Inter, sans-serif";
+      const tagW = ctx.measureText(label).width + padX * 2;
+      const tagX = Math.min(Math.max(left, plotLeft), Math.max(plotLeft, plotRight - tagW));
+      ctx.fillStyle = `rgba(${color}, 0.18)`;
+      ctx.fillRect(tagX, tagY - 11, tagW, 16);
+      ctx.strokeStyle = `rgba(${color}, 0.65)`;
+      ctx.strokeRect(tagX + 0.5, tagY - 10.5, tagW - 1, 15);
+      ctx.fillStyle = "#e8edf7";
+      ctx.fillText(label, tagX + padX, tagY);
+    });
+  };
+
   // Bollinger band fill + lines (behind price)
   if (boll) {
     ctx.beginPath();
@@ -1757,6 +2624,8 @@ function drawChart(candles) {
     drawSeries(boll.lower, OVERLAY_COLORS.boll, 1, [4, 3]);
     drawSeries(boll.mid, OVERLAY_COLORS.boll, 1, [1, 3]);
   }
+
+  drawPatternHighlights();
 
   const up = closes[n - 1] >= closes[0];
   const lineColor = up ? "#23c98b" : "#ff5c72";
@@ -2059,10 +2928,34 @@ el.recoFilter.addEventListener("change", () => {
   renderWatchlist();
 });
 
+el.capFilter?.addEventListener("change", () => {
+  state.capFilter = el.capFilter.value;
+  renderWatchlist();
+});
+
+el.sortFilter?.addEventListener("change", () => {
+  state.sortBy = el.sortFilter.value;
+  renderWatchlist();
+});
+
+el.tabWatchlist?.addEventListener("click", () => {
+  state.marketView = "watchlist";
+  renderWatchlist();
+});
+
+el.tabAllStocks?.addEventListener("click", async () => {
+  state.marketView = "all";
+  renderWatchlist();
+  if (!state.universe.length) await refreshUniverse();
+  await refreshAll();
+});
+
 el.country.addEventListener("change", () => {
   state.country = el.country.value;
   saveCountry();
+  updateMarketHoursUI();
   state.watchlist = loadWatchlist(state.country);
+  state.universe = [];
   state.quotes = {};
   state.selected = null;
   el.detailContent.classList.add("hidden");
@@ -2072,8 +2965,8 @@ el.country.addEventListener("change", () => {
   closeMoversEditor();
   renderWatchlist();
   refreshMovers();
-  refreshAll().then(() => {
-    if (state.watchlist.length) selectSymbol(state.watchlist[0]);
+  refreshUniverse().then(() => refreshAll()).then(() => {
+    if (state.marketView !== "all" && state.watchlist.length) selectSymbol(state.watchlist[0]);
   });
 });
 
@@ -2086,6 +2979,7 @@ el.moversConfig.addEventListener("click", () => {
   if (el.moversEditor.classList.contains("hidden")) openMoversEditor();
   else closeMoversEditor();
 });
+el.newsRefresh?.addEventListener("click", () => refreshNews(true));
 el.moversCancel.addEventListener("click", closeMoversEditor);
 el.moversSave.addEventListener("click", () => {
   const symbols = parseSymbolList(el.moversInput.value);
@@ -2102,16 +2996,55 @@ el.moversReset.addEventListener("click", () => {
 el.portfolioReset.addEventListener("click", () => {
   if (!confirm("Reset your paper portfolio? This clears all holdings and trade history.")) return;
   state.portfolio = { positions: {}, trades: [], realized: {} };
+  state.signalAlerts = {};
   savePortfolio();
+  saveSignalAlerts();
   renderPortfolio();
   if (state.selected && state.quotes[state.selected]) {
     renderDetail(state.quotes[state.selected]);
   }
 });
 
+if (el.pnlPeriodBar) {
+  el.pnlPeriodBar.querySelectorAll(".pnl-period-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.pnlPeriod.key = btn.dataset.period;
+      if (state.pnlPeriod.key === "custom") {
+        // Default custom window to last 30 days if empty
+        if (!state.pnlPeriod.from || !state.pnlPeriod.to) {
+          const to = new Date();
+          const from = new Date(to.getTime() - 29 * 86400000);
+          const iso = (d) => {
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, "0");
+            const day = String(d.getDate()).padStart(2, "0");
+            return `${y}-${m}-${day}`;
+          };
+          state.pnlPeriod.from = iso(from);
+          state.pnlPeriod.to = iso(to);
+          if (el.pnlFrom) el.pnlFrom.value = state.pnlPeriod.from;
+          if (el.pnlTo) el.pnlTo.value = state.pnlPeriod.to;
+        }
+      }
+      savePnlPeriod();
+      renderPortfolio();
+    });
+  });
+}
+if (el.pnlCustomApply) {
+  el.pnlCustomApply.addEventListener("click", () => {
+    state.pnlPeriod.key = "custom";
+    state.pnlPeriod.from = el.pnlFrom?.value || "";
+    state.pnlPeriod.to = el.pnlTo?.value || "";
+    savePnlPeriod();
+    renderPortfolio();
+  });
+}
+
 window.addEventListener("resize", () => {
   if (state.selected && state.quotes[state.selected]) {
-    drawChart(state.quotes[state.selected].candles);
+    const q = state.quotes[state.selected];
+    drawChart(q.candles, q.analysis?.patterns || []);
   }
 });
 
@@ -2120,12 +3053,20 @@ window.addEventListener("resize", () => {
 /* -------------------------------------------------------------------------- */
 
 function bootData() {
+  setPage(getInitialPage(), false);
+  updateAlertsUI();
+  updateMarketTabs();
+  updateMarketHoursUI();
+  if (updateMarketHoursUI._timer) clearInterval(updateMarketHoursUI._timer);
+  updateMarketHoursUI._timer = setInterval(updateMarketHoursUI, 30_000);
   el.country.value = state.country;
   renderWatchlist();
   renderPortfolio();
   refreshMovers();
-  refreshAll().then(() => {
-    if (!state.selected && state.watchlist.length) selectSymbol(state.watchlist[0]);
+  refreshUniverse().then(() => refreshAll()).then(() => {
+    if (state.page === "market" && state.marketView !== "all" && !state.selected && state.watchlist.length) {
+      selectSymbol(state.watchlist[0]);
+    }
   });
 }
 
@@ -2137,8 +3078,11 @@ async function reloadUserData() {
   }
   state.country = loadCountry();
   state.watchlist = loadWatchlist(state.country);
+  state.universe = [];
   state.chart = loadChartConfig();
   state.portfolio = loadPortfolio();
+  state.pnlPeriod = loadPnlPeriod();
+  state.signalAlerts = loadSignalAlerts();
   state.recoFilter = "ALL";
   state.quotes = {};
   state.selected = null;

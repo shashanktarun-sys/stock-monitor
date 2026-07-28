@@ -42,6 +42,7 @@
             <option value="IN">🇮🇳 India</option>
           </select>
         </label>
+        <span id="marketHours" class="market-hours" title="Regular market session status">—</span>
         <div class="search-wrap">
           <input
             id="search"
@@ -63,9 +64,18 @@
         <span id="status" class="status">—</span>
       </div>
       <nav class="topnav" aria-label="Account">
+        <button id="navMarket" class="nav-btn" title="Go to market watchlist and analysis">
+          📊 Market
+        </button>
         <button id="navPortfolio" class="nav-btn" title="Go to your paper portfolio">
           💼 Portfolio
           <span id="navPnl" class="nav-pnl"></span>
+        </button>
+        <button id="navNews" class="nav-btn" title="World news impact analyzer">
+          📰 News
+        </button>
+        <button id="enableAlertsBtn" class="nav-btn hidden" title="Enable browser alerts for signal reversals">
+          🔔 Enable alerts
         </button>
         <button id="signInNav" class="nav-btn hidden">Sign in</button>
         <div id="userChip" class="user-chip hidden">
@@ -78,78 +88,103 @@
       </nav>
     </header>
 
-    <section class="movers-bar" id="moversBar">
-      <div class="movers-head">
-        <span class="movers-head-title">
-          Market Movers
-          <span id="moversMeta" class="movers-meta"></span>
-        </span>
-        <button id="moversConfig" class="ghost-btn small" title="Edit which stocks are scanned">
-          ⚙ Edit universe
-        </button>
-      </div>
-      <div class="movers-editor hidden" id="moversEditor">
-        <textarea
-          id="moversInput"
-          rows="3"
-          placeholder="Comma/space-separated symbols, e.g. AAPL, MSFT, NVDA, TSLA"
-        ></textarea>
-        <div class="movers-editor-actions">
-          <button id="moversSave" class="mini-btn primary">Save</button>
-          <button id="moversUseWatchlist" class="mini-btn">Use my watchlist</button>
-          <button id="moversReset" class="mini-btn">Reset to default</button>
-          <button id="moversCancel" class="mini-btn">Cancel</button>
+    <section class="app-page" id="marketPage">
+      <section class="movers-bar" id="moversBar">
+        <div class="movers-head">
+          <span class="movers-head-title">
+            Market Movers
+            <span id="moversMeta" class="movers-meta"></span>
+          </span>
+          <button id="moversConfig" class="ghost-btn small" title="Edit which stocks are scanned">
+            ⚙ Edit universe
+          </button>
         </div>
-      </div>
-      <div class="movers-grid">
-        <div class="movers-group">
-          <span class="movers-title gain">▲ Top Gainers</span>
-          <div class="movers-list" id="gainersList">
-            <span class="movers-loading">Loading…</span>
+        <div class="movers-editor hidden" id="moversEditor">
+          <textarea
+            id="moversInput"
+            rows="3"
+            placeholder="Comma/space-separated symbols, e.g. AAPL, MSFT, NVDA, TSLA"
+          ></textarea>
+          <div class="movers-editor-actions">
+            <button id="moversSave" class="mini-btn primary">Save</button>
+            <button id="moversUseWatchlist" class="mini-btn">Use my watchlist</button>
+            <button id="moversReset" class="mini-btn">Reset to default</button>
+            <button id="moversCancel" class="mini-btn">Cancel</button>
           </div>
         </div>
-        <div class="movers-group">
-          <span class="movers-title lose">▼ Top Losers</span>
-          <div class="movers-list" id="losersList">
-            <span class="movers-loading">Loading…</span>
+        <div class="movers-grid">
+          <div class="movers-group">
+            <span class="movers-title gain">▲ Top Gainers</span>
+            <div class="movers-list" id="gainersList">
+              <span class="movers-loading">Loading…</span>
+            </div>
+          </div>
+          <div class="movers-group">
+            <span class="movers-title lose">▼ Top Losers</span>
+            <div class="movers-list" id="losersList">
+              <span class="movers-loading">Loading…</span>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
+
+      <main class="layout">
+        <section class="watchlist-panel">
+          <div class="panel-head">
+            <div class="seg market-tabs" role="tablist" aria-label="Stock list view">
+              <button id="tabWatchlist" class="seg-btn on" data-view="watchlist">Watchlist</button>
+              <button id="tabAllStocks" class="seg-btn" data-view="all">All Stocks</button>
+            </div>
+            <button id="refreshAll" class="ghost-btn" title="Refresh now">↻</button>
+          </div>
+          <div class="wl-filter">
+            <label>
+              Signal
+              <select id="recoFilter">
+                <option value="ALL">All</option>
+                <option value="STRONG BUY">Strong Buy</option>
+                <option value="BUY">Buy</option>
+                <option value="HOLD">Hold</option>
+                <option value="SELL">Sell</option>
+                <option value="STRONG SELL">Strong Sell</option>
+              </select>
+            </label>
+            <label>
+              Market cap
+              <select id="capFilter">
+                <option value="ALL">All</option>
+                <option value="large">Large Cap</option>
+                <option value="mid">Mid Cap</option>
+                <option value="small">Small Cap</option>
+              </select>
+            </label>
+            <label>
+              Sort
+              <select id="sortFilter">
+                <option value="symbol">Symbol</option>
+                <option value="price_desc">Price ↓</option>
+                <option value="price_asc">Price ↑</option>
+                <option value="change_desc">% Change ↓</option>
+                <option value="change_asc">% Change ↑</option>
+              </select>
+            </label>
+            <span id="filterCount" class="filter-count"></span>
+          </div>
+          <ul id="watchlist" class="watchlist"></ul>
+          <p class="hint">Tip: click a row to see full analysis. Data via Yahoo Finance.</p>
+        </section>
+
+        <section id="detail" class="detail-panel">
+          <div class="empty-state" id="emptyState">
+            <div class="empty-emoji">🔍</div>
+            <p>Select a stock from your watchlist or search to begin.</p>
+          </div>
+          <div id="detailContent" class="detail-content hidden"></div>
+        </section>
+      </main>
     </section>
 
-    <main class="layout">
-      <section class="watchlist-panel">
-        <div class="panel-head">
-          <h2>Watchlist</h2>
-          <button id="refreshAll" class="ghost-btn" title="Refresh now">↻</button>
-        </div>
-        <div class="wl-filter">
-          <label>
-            Signal
-            <select id="recoFilter">
-              <option value="ALL">All</option>
-              <option value="STRONG BUY">Strong Buy</option>
-              <option value="BUY">Buy</option>
-              <option value="HOLD">Hold</option>
-              <option value="SELL">Sell</option>
-              <option value="STRONG SELL">Strong Sell</option>
-            </select>
-          </label>
-          <span id="filterCount" class="filter-count"></span>
-        </div>
-        <ul id="watchlist" class="watchlist"></ul>
-        <p class="hint">Tip: click a row to see full analysis. Data via Yahoo Finance.</p>
-      </section>
-
-      <section id="detail" class="detail-panel">
-        <div class="empty-state" id="emptyState">
-          <div class="empty-emoji">🔍</div>
-          <p>Select a stock from your watchlist or search to begin.</p>
-        </div>
-        <div id="detailContent" class="detail-content hidden"></div>
-      </section>
-    </main>
-
+    <section class="app-page hidden" id="portfolioPage">
     <section class="portfolio-panel" id="portfolioPanel">
       <div class="panel-head">
         <h2>Paper Portfolio <span id="portfolioTraderType" class="trader-class-badge compact hidden"></span></h2>
@@ -157,13 +192,60 @@
           Reset
         </button>
       </div>
+      <div class="pnl-period-bar" id="pnlPeriodBar">
+        <span class="pnl-period-label">P&amp;L period</span>
+        <div class="pnl-period-btns" role="group" aria-label="P&amp;L time period">
+          <button type="button" class="pnl-period-btn" data-period="1d">Today</button>
+          <button type="button" class="pnl-period-btn" data-period="7d">7D</button>
+          <button type="button" class="pnl-period-btn" data-period="30d">30D</button>
+          <button type="button" class="pnl-period-btn" data-period="90d">90D</button>
+          <button type="button" class="pnl-period-btn" data-period="ytd">YTD</button>
+          <button type="button" class="pnl-period-btn active" data-period="all">All</button>
+          <button type="button" class="pnl-period-btn" data-period="custom">Custom</button>
+        </div>
+        <div class="pnl-custom-range hidden" id="pnlCustomRange">
+          <label>From <input type="date" id="pnlFrom" /></label>
+          <label>To <input type="date" id="pnlTo" /></label>
+          <button type="button" class="mini-btn" id="pnlCustomApply">Apply</button>
+        </div>
+      </div>
       <div id="portfolioSummary" class="portfolio-summary"></div>
       <div id="portfolioHoldings" class="portfolio-holdings"></div>
-      <details class="trade-history-wrap">
-        <summary>Trade history</summary>
+      <details class="trade-history-wrap" open>
+        <summary>Trade history <span id="tradeHistoryMeta" class="trade-history-meta"></span></summary>
         <div id="tradeHistory" class="trade-history"></div>
       </details>
       <p class="pf-note">Paper trading only — virtual money, no real orders are placed.</p>
+    </section>
+    </section>
+
+    <section class="app-page hidden" id="newsPage">
+      <section class="news-panel" id="newsPanel">
+        <div class="panel-head">
+          <h2>News Analyzer</h2>
+          <button id="newsRefresh" class="ghost-btn small" title="Refresh news analysis">↻ Refresh</button>
+        </div>
+        <p class="news-sub">
+          Latest world &amp; market headlines mapped to likely <b>country</b>, <b>industry</b>, and <b>stock</b> impact.
+        </p>
+        <div id="newsMeta" class="news-meta">Loading…</div>
+        <div class="news-boards">
+          <div class="news-board">
+            <h3>Country impact</h3>
+            <div id="newsCountryBoard" class="news-chip-list"></div>
+          </div>
+          <div class="news-board">
+            <h3>Industry impact</h3>
+            <div id="newsIndustryBoard" class="news-chip-list"></div>
+          </div>
+          <div class="news-board">
+            <h3>Stock impact</h3>
+            <div id="newsStockBoard" class="news-chip-list"></div>
+          </div>
+        </div>
+        <div id="newsFeed" class="news-feed"></div>
+        <p class="pf-note">Educational heuristic only — not financial advice.</p>
+      </section>
     </section>
 
     <footer class="disclaimer">

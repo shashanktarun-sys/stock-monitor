@@ -44,6 +44,9 @@ combining weighted signals:
 | RSI(14) | < 30 oversold / > 50 | > 70 overbought / < 50 |
 | MACD | above signal line | below signal line |
 | 5-day momentum | positive | negative |
+| Candlestick patterns | hammer, engulfing, morning star, three soldiers, etc. | shooting star, evening star, three crows, etc. |
+
+Candlestick detection uses the last few daily OHLC bars (doji, hammer, engulfing, harami, stars, soldiers/crows, and more). Pattern score is capped and blended into the total.
 
 The final score maps to: `STRONG BUY ≥ 45`, `BUY ≥ 15`, `HOLD`, `SELL ≤ -15`, `STRONG SELL ≤ -45`.
 
