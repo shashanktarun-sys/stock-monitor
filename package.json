@@ -1,0 +1,21 @@
+{
+  "name": "stock-monitor",
+  "version": "1.0.0",
+  "description": "Real-time stock price monitor with short-term buy/sell/hold signals based on technical indicators.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "stocks",
+    "real-time",
+    "technical-analysis",
+    "trading"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

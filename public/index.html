@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <title>Pulse · Real-Time Stock Monitor</title>
+
+    <!-- PWA / iOS home-screen app -->
+    <meta name="theme-color" content="#0b1020" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Pulse" />
+    <link rel="apple-touch-icon" href="/icons/icon-1024.png" />
+    <link rel="icon" type="image/png" href="/icons/icon-1024.png" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">📈</span>
+        <div>
+          <h1>Pulse</h1>
+          <p>Real-time monitor &amp; short-term signals</p>
+        </div>
+      </div>
+      <div class="controls">
+        <label class="refresh country">
+          Market
+          <select id="country">
+            <option value="US">🇺🇸 United States</option>
+            <option value="IN">🇮🇳 India</option>
+          </select>
+        </label>
+        <div class="search-wrap">
+          <input
+            id="search"
+            type="text"
+            placeholder="Search ticker or company (e.g. AAPL, Tesla)…"
+            autocomplete="off"
+          />
+          <div id="suggestions" class="suggestions"></div>
+        </div>
+        <label class="refresh">
+          Refresh
+          <select id="interval">
+            <option value="10000">10s</option>
+            <option value="30000" selected>30s</option>
+            <option value="60000">1m</option>
+            <option value="0">Off</option>
+          </select>
+        </label>
+        <span id="status" class="status">—</span>
+      </div>
+      <nav class="topnav" aria-label="Account">
+        <button id="navPortfolio" class="nav-btn" title="Go to your paper portfolio">
+          💼 Portfolio
+          <span id="navPnl" class="nav-pnl"></span>
+        </button>
+        <button id="signInNav" class="nav-btn hidden">Sign in</button>
+        <div id="userChip" class="user-chip hidden">
+          <button id="profileBtn" class="user-chip-btn" title="Open your profile">
+            <img id="userAvatar" class="user-avatar" alt="" referrerpolicy="no-referrer" />
+            <span id="userName" class="user-name"></span>
+          </button>
+          <button id="signOutBtn" class="mini-btn">Sign out</button>
+        </div>
+      </nav>
+    </header>
+
+    <section class="movers-bar" id="moversBar">
+      <div class="movers-head">
+        <span class="movers-head-title">
+          Market Movers
+          <span id="moversMeta" class="movers-meta"></span>
+        </span>
+        <button id="moversConfig" class="ghost-btn small" title="Edit which stocks are scanned">
+          ⚙ Edit universe
+        </button>
+      </div>
+      <div class="movers-editor hidden" id="moversEditor">
+        <textarea
+          id="moversInput"
+          rows="3"
+          placeholder="Comma/space-separated symbols, e.g. AAPL, MSFT, NVDA, TSLA"
+        ></textarea>
+        <div class="movers-editor-actions">
+          <button id="moversSave" class="mini-btn primary">Save</button>
+          <button id="moversUseWatchlist" class="mini-btn">Use my watchlist</button>
+          <button id="moversReset" class="mini-btn">Reset to default</button>
+          <button id="moversCancel" class="mini-btn">Cancel</button>
+        </div>
+      </div>
+      <div class="movers-grid">
+        <div class="movers-group">
+          <span class="movers-title gain">▲ Top Gainers</span>
+          <div class="movers-list" id="gainersList">
+            <span class="movers-loading">Loading…</span>
+          </div>
+        </div>
+        <div class="movers-group">
+          <span class="movers-title lose">▼ Top Losers</span>
+          <div class="movers-list" id="losersList">
+            <span class="movers-loading">Loading…</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <main class="layout">
+      <section class="watchlist-panel">
+        <div class="panel-head">
+          <h2>Watchlist</h2>
+          <button id="refreshAll" class="ghost-btn" title="Refresh now">↻</button>
+        </div>
+        <div class="wl-filter">
+          <label>
+            Signal
+            <select id="recoFilter">
+              <option value="ALL">All</option>
+              <option value="STRONG BUY">Strong Buy</option>
+              <option value="BUY">Buy</option>
+              <option value="HOLD">Hold</option>
+              <option value="SELL">Sell</option>
+              <option value="STRONG SELL">Strong Sell</option>
+            </select>
+          </label>
+          <span id="filterCount" class="filter-count"></span>
+        </div>
+        <ul id="watchlist" class="watchlist"></ul>
+        <p class="hint">Tip: click a row to see full analysis. Data via Yahoo Finance.</p>
+      </section>
+
+      <section id="detail" class="detail-panel">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-emoji">🔍</div>
+          <p>Select a stock from your watchlist or search to begin.</p>
+        </div>
+        <div id="detailContent" class="detail-content hidden"></div>
+      </section>
+    </main>
+
+    <section class="portfolio-panel" id="portfolioPanel">
+      <div class="panel-head">
+        <h2>Paper Portfolio</h2>
+        <button id="portfolioReset" class="ghost-btn small" title="Clear all holdings and history">
+          Reset
+        </button>
+      </div>
+      <div id="portfolioSummary" class="portfolio-summary"></div>
+      <div id="portfolioHoldings" class="portfolio-holdings"></div>
+      <details class="trade-history-wrap">
+        <summary>Trade history</summary>
+        <div id="tradeHistory" class="trade-history"></div>
+      </details>
+      <p class="pf-note">Paper trading only — virtual money, no real orders are placed.</p>
+    </section>
+
+    <footer class="disclaimer">
+      ⚠️ For educational purposes only. Signals are generated from technical
+      indicators and are <strong>not financial advice</strong>. Markets are
+      risky — do your own research.
+    </footer>
+
+    <div id="loginOverlay" class="login-overlay hidden">
+      <div class="login-card">
+        <img src="/icons/icon-1024.png" class="login-logo" alt="Pulse" />
+
+        <!-- ---------------------------- Sign in view -------------------------- -->
+        <div id="viewSignin" class="auth-view">
+          <h2>Welcome back</h2>
+          <p class="login-sub">Sign in to your Pulse account.</p>
+          <form id="loginForm" class="auth-form" novalidate>
+            <label class="field">
+              <span>Email</span>
+              <input id="loginEmail" type="email" autocomplete="email" placeholder="you@example.com" required />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Your password" required />
+            </label>
+            <div id="loginError" class="auth-error hidden"></div>
+            <button type="submit" id="loginSubmit" class="auth-btn primary">Sign in</button>
+          </form>
+          <p class="auth-switch">
+            <button type="button" id="toReset" class="link-btn">Forgot password?</button>
+          </p>
+          <p class="auth-switch">
+            New here? <button type="button" id="toSignup" class="link-btn">Create an account</button>
+          </p>
+        </div>
+
+        <!-- ---------------------------- Reset password view ------------------- -->
+        <div id="viewReset" class="auth-view hidden">
+          <h2>Reset password</h2>
+          <p class="login-sub">We'll email you a code to reset your password.</p>
+          <form id="resetForm" class="auth-form" novalidate>
+            <label class="field">
+              <span>Email</span>
+              <input id="resetEmail" type="email" autocomplete="email" placeholder="you@example.com" required />
+            </label>
+            <button type="button" id="resetSendBtn" class="auth-btn">Send reset code</button>
+
+            <div id="resetStep2" class="hidden">
+              <label class="field">
+                <span>Verification code</span>
+                <input id="resetCode" type="text" inputmode="numeric" maxlength="6"
+                       pattern="[0-9]{6}" placeholder="123456" class="otp-input" />
+              </label>
+              <label class="field">
+                <span>New password</span>
+                <input id="resetNewPw" type="password" autocomplete="new-password" placeholder="At least 6 characters" />
+              </label>
+              <button type="submit" id="resetSubmit" class="auth-btn primary">Reset password &amp; sign in</button>
+            </div>
+
+            <div id="resetDevOtp" class="login-note hidden"></div>
+            <div id="resetError" class="auth-error hidden"></div>
+          </form>
+          <p class="auth-switch">
+            <button type="button" id="backToSignin" class="link-btn">Back to sign in</button>
+          </p>
+        </div>
+
+        <!-- ---------------------------- Sign up view -------------------------- -->
+        <div id="viewSignup" class="auth-view hidden">
+          <h2>Create your account</h2>
+          <p class="login-sub">We'll email you a code to verify your address.</p>
+          <form id="signupForm" class="auth-form" novalidate>
+            <label class="field">
+              <span>Name</span>
+              <input id="signupName" type="text" autocomplete="name" placeholder="Your name" required />
+            </label>
+            <label class="field">
+              <span>Email</span>
+              <input id="signupEmail" type="email" autocomplete="email" placeholder="you@example.com" required />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input id="signupPassword" type="password" autocomplete="new-password" placeholder="At least 6 characters" required />
+            </label>
+            <div id="signupError" class="auth-error hidden"></div>
+            <button type="submit" id="signupSubmit" class="auth-btn primary">Create account</button>
+          </form>
+          <p class="auth-switch">
+            Already have an account? <button type="button" id="toSignin" class="link-btn">Sign in</button>
+          </p>
+        </div>
+
+        <!-- ---------------------------- Verify OTP view ----------------------- -->
+        <div id="viewVerify" class="auth-view hidden">
+          <h2>Verify your email</h2>
+          <p class="login-sub">
+            Enter the 6-digit code we sent to <strong id="verifyEmail"></strong>.
+          </p>
+          <form id="verifyForm" class="auth-form" novalidate>
+            <label class="field">
+              <span>Verification code</span>
+              <input id="verifyCode" type="text" inputmode="numeric" autocomplete="one-time-code"
+                     maxlength="6" pattern="[0-9]{6}" placeholder="123456" class="otp-input" required />
+            </label>
+            <div id="devOtpNote" class="login-note hidden"></div>
+            <div id="verifyError" class="auth-error hidden"></div>
+            <button type="submit" id="verifySubmit" class="auth-btn primary">Verify &amp; continue</button>
+          </form>
+          <p class="auth-switch">
+            Didn't get it?
+            <button type="button" id="resendOtp" class="link-btn">Resend code</button>
+            ·
+            <button type="button" id="backToSignup" class="link-btn">Change email</button>
+          </p>
+        </div>
+
+        <!-- --------------------------- Shared footer -------------------------- -->
+        <div class="login-divider"><span>or</span></div>
+        <div id="googleBtn" class="google-btn-wrap"></div>
+        <div id="googleUnavailable" class="login-note hidden">
+          Google sign-in isn't configured on this server yet.
+        </div>
+        <button id="guestBtn" class="mini-btn">Continue as guest</button>
+        <p class="login-fine">
+          Educational paper trading only — not financial advice.
+        </p>
+      </div>
+    </div>
+
+    <div id="profileOverlay" class="login-overlay hidden">
+      <div class="login-card profile-card">
+        <button id="profileClose" class="profile-close" aria-label="Close">✕</button>
+
+        <div class="profile-head">
+          <div id="profileAvatar" class="profile-avatar"></div>
+          <div class="profile-id">
+            <div id="profileName" class="profile-name"></div>
+            <div id="profileEmail" class="profile-email"></div>
+            <div class="profile-meta">
+              <span id="profileProvider" class="profile-badge"></span>
+              <span id="profileSince" class="profile-since"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="profile-details">
+          <h3 class="profile-section-title">Personal details</h3>
+          <div class="pd-row"><span>Full name</span><b id="pdName">—</b></div>
+          <div class="pd-row"><span>Email</span><b id="pdEmail">—</b></div>
+          <div class="pd-row"><span>Account type</span><b id="pdProvider">—</b></div>
+          <div class="pd-row"><span>Member since</span><b id="pdSince">—</b></div>
+          <div class="pd-row"><span>Account ID</span><b id="pdId" class="mono">—</b></div>
+          <div class="pd-row"><span>Watchlist size</span><b id="pdWatch">—</b></div>
+          <div class="pd-row"><span>Open holdings</span><b id="pdHoldings">—</b></div>
+          <div class="pd-row"><span>Total trades</span><b id="pdTrades">—</b></div>
+        </div>
+
+        <div class="profile-stats">
+          <div class="stat">
+            <div id="statWatch" class="stat-num">0</div>
+            <div class="stat-label">Watchlist</div>
+          </div>
+          <div class="stat">
+            <div id="statHoldings" class="stat-num">0</div>
+            <div class="stat-label">Holdings</div>
+          </div>
+          <div class="stat">
+            <div id="statTrades" class="stat-num">0</div>
+            <div class="stat-label">Trades</div>
+          </div>
+        </div>
+        <div id="statRealized" class="profile-realized"></div>
+
+        <div id="profileEditWrap" class="profile-section">
+          <h3>Edit profile</h3>
+          <form id="profileNameForm" class="auth-form">
+            <label class="field">
+              <span>Display name</span>
+              <input id="profileNameInput" type="text" maxlength="80" autocomplete="name" />
+            </label>
+            <div id="profileNameMsg" class="auth-msg hidden"></div>
+            <button type="submit" id="profileNameSave" class="auth-btn primary">Save name</button>
+          </form>
+        </div>
+
+        <div id="profilePwWrap" class="profile-section">
+          <h3>Password</h3>
+          <form id="profilePwForm" class="auth-form">
+            <label class="field">
+              <span>Current password</span>
+              <input id="pwCurrent" type="password" autocomplete="current-password" />
+            </label>
+            <label class="field">
+              <span>New password</span>
+              <input id="pwNew" type="password" autocomplete="new-password" placeholder="At least 6 characters" />
+            </label>
+            <div id="profilePwMsg" class="auth-msg hidden"></div>
+            <button type="submit" id="profilePwSave" class="auth-btn primary">Update password</button>
+          </form>
+          <p class="auth-switch">
+            Forgot your current password?
+            <button type="button" id="profileResetPw" class="link-btn">Reset via email OTP</button>
+          </p>
+          <div id="profileResetBox" class="profile-reset-box hidden">
+            <p class="login-sub" style="margin:0 0 10px">
+              We'll email a code to <strong id="profileResetEmail"></strong>.
+            </p>
+            <button type="button" id="profileResetSend" class="auth-btn">Send reset code</button>
+            <div id="profileResetStep2" class="hidden" style="margin-top:12px">
+              <label class="field">
+                <span>Verification code</span>
+                <input id="profileResetCode" type="text" inputmode="numeric" maxlength="6"
+                       pattern="[0-9]{6}" placeholder="123456" class="otp-input" />
+              </label>
+              <label class="field" style="margin-top:10px">
+                <span>New password</span>
+                <input id="profileResetNewPw" type="password" autocomplete="new-password"
+                       placeholder="At least 6 characters" />
+              </label>
+              <button type="button" id="profileResetConfirm" class="auth-btn primary" style="margin-top:10px">
+                Confirm new password
+              </button>
+            </div>
+            <div id="profileResetDev" class="login-note hidden" style="margin-top:10px"></div>
+            <div id="profileResetMsg" class="auth-msg hidden" style="margin-top:10px"></div>
+          </div>
+        </div>
+
+        <button id="profileSignOut" class="auth-btn">Sign out</button>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
