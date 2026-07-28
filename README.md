@@ -62,6 +62,21 @@ For live-reload during development:
 npm run dev
 ```
 
+## Deploy (free public URL)
+
+This repo includes a [Render](https://render.com) Blueprint (`render.yaml`) that
+deploys as **pulse-stock-pal** on the free plan.
+
+1. Push this repo to GitHub (already done if you followed check-in).
+2. Open: [Deploy Blueprint on Render](https://dashboard.render.com/blueprints/new?repo=https://github.com/shashanktarun-sys/stock-monitor)
+3. Connect your GitHub account if prompted, then click **Apply**.
+4. After deploy finishes, your public URL will be:
+   **https://pulse-stock-pal.onrender.com**
+
+Notes:
+- Free Render services **sleep after ~15 minutes** of no traffic; the first request after sleep can take ~30–60s.
+- Disk is ephemeral — user accounts / synced portfolios in `data/` reset if the service is wiped or moved. For durable storage later, add a database or disk.
+- Optional: set `GOOGLE_CLIENT_ID` and SMTP env vars in the Render dashboard for Google login and real OTP emails.
 ## Use it on your iPhone (installable PWA)
 
 Pulse is a **Progressive Web App**, so you can add it to your iPhone Home Screen

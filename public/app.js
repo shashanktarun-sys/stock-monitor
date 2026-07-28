@@ -48,7 +48,7 @@ function savePortfolio() {
   scheduleServerSync();
 }
 
-function buyStock(symbol, qty, price, currency, name, signal) {
+function buyStock(symbol, qty, price, currency, name, signal, industryInfo) {
   qty = Math.floor(qty);
   if (!(qty > 0) || !(price > 0)) return;
   const p = state.portfolio;
@@ -63,6 +63,10 @@ function buyStock(symbol, qty, price, currency, name, signal) {
     pos.buySignal = signal.recommendation;
     pos.buyScore = signal.score;
   }
+  if (industryInfo) {
+    if (industryInfo.industry) pos.industry = industryInfo.industry;
+    if (industryInfo.sector) pos.sector = industryInfo.sector;
+  }
   p.positions[symbol] = pos;
   p.trades.unshift({
     symbol,
@@ -73,6 +77,8 @@ function buyStock(symbol, qty, price, currency, name, signal) {
     ts: Date.now(),
     signal: signal ? signal.recommendation : null,
     score: signal ? signal.score : null,
+    industry: industryInfo?.industry || pos.industry || null,
+    sector: industryInfo?.sector || pos.sector || null,
   });
   savePortfolio();
 }
@@ -355,6 +361,7 @@ const el = {
   tradeHistory: document.getElementById("tradeHistory"),
   portfolioReset: document.getElementById("portfolioReset"),
   portfolioPanel: document.getElementById("portfolioPanel"),
+  portfolioTraderType: document.getElementById("portfolioTraderType"),
   navPortfolio: document.getElementById("navPortfolio"),
   navPnl: document.getElementById("navPnl"),
   signInNav: document.getElementById("signInNav"),
@@ -421,6 +428,11 @@ const el = {
   pdWatch: document.getElementById("pdWatch"),
   pdHoldings: document.getElementById("pdHoldings"),
   pdTrades: document.getElementById("pdTrades"),
+  pdTraderType: document.getElementById("pdTraderType"),
+  traderClassBadge: document.getElementById("traderClassBadge"),
+  traderClassSummary: document.getElementById("traderClassSummary"),
+  traderClassTraits: document.getElementById("traderClassTraits"),
+  traderClassCard: document.getElementById("traderClassCard"),
   statWatch: document.getElementById("statWatch"),
   statHoldings: document.getElementById("statHoldings"),
   statTrades: document.getElementById("statTrades"),
@@ -595,10 +607,246 @@ function renderMovers(container, list, kind) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Trader classification (from paper-trading history)                        */
+/* -------------------------------------------------------------------------- */
+
+function classifyTrader(portfolio) {
+  const trades = portfolio?.trades || [];
+  const positions = portfolio?.positions || {};
+  const buys = trades.filter((t) => t.side === "BUY");
+  const sells = trades.filter((t) => t.side === "SELL");
+  const closed = sells.filter((t) => t.realized != null);
+  const openN = Object.keys(positions).length;
+  const symbols = new Set(trades.map((t) => t.symbol));
+
+  if (trades.length === 0) {
+    return {
+      key: "observer",
+      label: "Observer",
+      tone: "muted",
+      summary:
+        "No paper trades yet. Buy and sell a few stocks to unlock your trader type.",
+      traits: [
+        { label: "Trades", value: "0" },
+        { label: "Open", value: String(openN) },
+      ],
+    };
+  }
+
+  if (trades.length < 3) {
+    return {
+      key: "new",
+      label: "New Trader",
+      tone: "info",
+      summary:
+        "You're just getting started. Keep trading to reveal a clearer style profile.",
+      traits: [
+        { label: "Trades", value: String(trades.length) },
+        { label: "Symbols", value: String(symbols.size) },
+        { label: "Open", value: String(openN) },
+      ],
+    };
+  }
+
+  // Win rate on closed sells
+  const wins = closed.filter((t) => t.realized > 0).length;
+  const losses = closed.filter((t) => t.realized < 0).length;
+  const winRate = closed.length ? wins / closed.length : null;
+
+  // Average hold time (FIFO match buys → sells per symbol)
+  const holdDays = estimateAvgHoldDays(trades);
+  const times = trades.map((t) => t.ts).filter(Boolean);
+  const spanDays =
+    times.length >= 2
+      ? Math.max(1, (Math.max(...times) - Math.min(...times)) / 86400000)
+      : 1;
+  const tradesPerWeek = (trades.length / spanDays) * 7;
+
+  // Pulse signal alignment on buys
+  const bullish = new Set(["BUY", "STRONG BUY"]);
+  const bearish = new Set(["SELL", "STRONG SELL"]);
+  const buysWithSig = buys.filter((t) => t.signal);
+  const followN = buysWithSig.filter((t) => bullish.has(t.signal)).length;
+  const contraN = buysWithSig.filter((t) => bearish.has(t.signal)).length;
+  const followRate = buysWithSig.length ? followN / buysWithSig.length : null;
+  const contraRate = buysWithSig.length ? contraN / buysWithSig.length : null;
+
+  // Concentration
+  const concentrated = symbols.size <= 2 && trades.length >= 4;
+  const diversified = symbols.size >= 5;
+
+  // Pick primary archetype (priority order)
+  let key = "balanced";
+  let label = "Balanced Trader";
+  let tone = "info";
+  let summary =
+    "A mix of styles so far — neither purely short-term nor long-term.";
+
+  if (tradesPerWeek >= 8 || (holdDays != null && holdDays < 1.5 && sells.length >= 2)) {
+    key = "scalper";
+    label = "Active Scalper";
+    tone = "hot";
+    summary =
+      "You trade often and tend to exit quickly. Short holding periods dominate your history.";
+  } else if (holdDays != null && holdDays <= 10 && sells.length >= 2) {
+    key = "swing";
+    label = "Swing Trader";
+    tone = "accent";
+    summary =
+      "You typically hold for several days. Your pattern fits short-to-medium swing trades.";
+  } else if (
+    (holdDays != null && holdDays > 10) ||
+    (buys.length >= 3 && sells.length / Math.max(buys.length, 1) < 0.35)
+  ) {
+    key = "holder";
+    label = "Buy & Hold";
+    tone = "calm";
+    summary =
+      "You buy more than you sell and/or hold positions longer — closer to an investor than a day trader.";
+  }
+
+  if (followRate != null && followRate >= 0.6 && buysWithSig.length >= 2) {
+    key = "follower";
+    label = "Signal Follower";
+    tone = "up";
+    summary =
+      "Most of your buys line up with Pulse BUY / STRONG BUY signals. You tend to trade with the model's bias.";
+  } else if (contraRate != null && contraRate >= 0.5 && buysWithSig.length >= 2) {
+    key = "contrarian";
+    label = "Contrarian";
+    tone = "down";
+    summary =
+      "You often buy when Pulse is bearish (SELL / STRONG SELL). That is a high-conviction, higher-risk style.";
+  }
+
+  if (concentrated && key !== "contrarian") {
+    // Soft override flavor if still generic
+    if (key === "balanced" || key === "swing") {
+      key = "focused";
+      label = "Concentrated Speculator";
+      tone = "hot";
+      summary =
+        "Your trades cluster in just one or two symbols. High focus can amplify both gains and losses.";
+    }
+  } else if (diversified && (key === "balanced" || key === "holder")) {
+    key = "diversified";
+    label = "Diversified Investor";
+    tone = "calm";
+    summary =
+      "You spread activity across many symbols — more portfolio-like than single-stock speculation.";
+  }
+
+  // Performance flavor (suffix if enough closed trades)
+  if (winRate != null && closed.length >= 3) {
+    if (winRate >= 0.6) {
+      summary += " Recent closed trades show a solid win rate.";
+      if (tone === "info" || tone === "muted") tone = "up";
+    } else if (winRate <= 0.35) {
+      summary += " Recent closed trades have been tough — consider sizing down or waiting for stronger signals.";
+      if (key === "balanced") {
+        label = "Learning Trader";
+        tone = "warn";
+      }
+    }
+  }
+
+  const traits = [
+    { label: "Trades", value: String(trades.length) },
+    { label: "Symbols", value: String(symbols.size) },
+    { label: "Open", value: String(openN) },
+  ];
+  if (winRate != null && closed.length) {
+    traits.push({
+      label: "Win rate",
+      value: `${Math.round(winRate * 100)}% (${wins}W/${losses}L)`,
+    });
+  }
+  if (holdDays != null) {
+    traits.push({
+      label: "Avg hold",
+      value: holdDays < 1 ? `${Math.round(holdDays * 24)}h` : `${holdDays.toFixed(1)}d`,
+    });
+  }
+  traits.push({
+    label: "Activity",
+    value: `${tradesPerWeek.toFixed(1)}/wk`,
+  });
+  if (followRate != null) {
+    traits.push({
+      label: "Follows Pulse",
+      value: `${Math.round(followRate * 100)}%`,
+    });
+  }
+  if (contraRate != null && contraRate > 0) {
+    traits.push({
+      label: "Buys vs signal",
+      value: `${Math.round(contraRate * 100)}% contrarian`,
+    });
+  }
+
+  return { key, label, tone, summary, traits };
+}
+
+/** FIFO-ish average holding period in days from buy/sell history. */
+function estimateAvgHoldDays(trades) {
+  const chron = [...trades].filter((t) => t.ts).sort((a, b) => a.ts - b.ts);
+  const lots = {}; // symbol -> [{ts, qty}]
+  const holds = [];
+  for (const t of chron) {
+    if (t.side === "BUY") {
+      if (!lots[t.symbol]) lots[t.symbol] = [];
+      lots[t.symbol].push({ ts: t.ts, qty: t.qty });
+    } else if (t.side === "SELL") {
+      let left = t.qty;
+      const q = lots[t.symbol] || [];
+      while (left > 0 && q.length) {
+        const lot = q[0];
+        const used = Math.min(left, lot.qty);
+        holds.push((t.ts - lot.ts) / 86400000);
+        lot.qty -= used;
+        left -= used;
+        if (lot.qty <= 0) q.shift();
+      }
+    }
+  }
+  if (!holds.length) return null;
+  return holds.reduce((a, b) => a + b, 0) / holds.length;
+}
+
+function renderTraderClassification() {
+  const cls = classifyTrader(state.portfolio);
+  if (el.traderClassBadge) {
+    el.traderClassBadge.textContent = cls.label;
+    el.traderClassBadge.className = `trader-class-badge tone-${cls.tone}`;
+  }
+  if (el.traderClassSummary) el.traderClassSummary.textContent = cls.summary;
+  if (el.traderClassTraits) {
+    el.traderClassTraits.innerHTML = cls.traits
+      .map(
+        (t) =>
+          `<div class="trader-trait"><span>${t.label}</span><b>${t.value}</b></div>`
+      )
+      .join("");
+  }
+  if (el.pdTraderType) el.pdTraderType.textContent = cls.label;
+  if (el.portfolioTraderType) {
+    if (cls.key === "observer") {
+      el.portfolioTraderType.classList.add("hidden");
+    } else {
+      el.portfolioTraderType.textContent = cls.label;
+      el.portfolioTraderType.className = `trader-class-badge compact tone-${cls.tone}`;
+      el.portfolioTraderType.classList.remove("hidden");
+    }
+  }
+  return cls;
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Paper portfolio                                                           */
 /* -------------------------------------------------------------------------- */
 
 function renderPortfolio() {
+  renderTraderClassification();
   const p = state.portfolio;
   const symbols = Object.keys(p.positions);
   const currencies = new Set([
@@ -676,6 +924,45 @@ function renderPortfolio() {
   if (!symbols.length) {
     el.portfolioHoldings.innerHTML = `<div class="pf-empty">No open positions. Realized results are shown above.</div>`;
   } else {
+    // Backfill industry/sector from live quotes onto positions when missing.
+    let dirty = false;
+    symbols.forEach((sym) => {
+      const pos = p.positions[sym];
+      const q = state.quotes[sym];
+      if (!q) return;
+      if (!pos.industry && q.industry) {
+        pos.industry = q.industry;
+        dirty = true;
+      }
+      if (!pos.sector && q.sector) {
+        pos.sector = q.sector;
+        dirty = true;
+      }
+    });
+    if (dirty) savePortfolio();
+
+    // Sector allocation strip
+    const bySector = {};
+    let totalValue = 0;
+    symbols.forEach((sym) => {
+      const pos = p.positions[sym];
+      const price = state.quotes[sym]?.price ?? pos.avgCost;
+      const value = pos.qty * price;
+      totalValue += value;
+      const sector = pos.sector || state.quotes[sym]?.sector || "Unknown";
+      bySector[sector] = (bySector[sector] || 0) + value;
+    });
+    const sectorHtml =
+      totalValue > 0
+        ? `<div class="pf-sectors">${Object.entries(bySector)
+            .sort((a, b) => b[1] - a[1])
+            .map(([sector, value]) => {
+              const pct = (value / totalValue) * 100;
+              return `<span class="pf-sector-chip" title="${sector}: ${pct.toFixed(1)}% of portfolio"><b>${sector}</b> ${pct.toFixed(0)}%</span>`;
+            })
+            .join("")}</div>`
+        : "";
+
     const rows = symbols
       .map((sym) => {
         const pos = p.positions[sym];
@@ -686,6 +973,9 @@ function renderPortfolio() {
         const upl = value - invested;
         const uplPct = invested ? (upl / invested) * 100 : 0;
         const cls = upl >= 0 ? "up" : "down";
+        const industry = pos.industry || q?.industry || null;
+        const sector = pos.sector || q?.sector || null;
+        const industryLabel = industry || sector || "—";
         const buySig = pos.buySignal
           ? `<span class="badge ${badgeClass(pos.buySignal)}" title="Pulse signal when you bought">${pos.buySignal}${
               pos.buyScore != null ? ` ${pos.buyScore > 0 ? "+" : ""}${pos.buyScore}` : ""
@@ -704,6 +994,7 @@ function renderPortfolio() {
           <div class="pfh-main">
             <div class="pfh-sym">${sym.replace(".NS", "")}</div>
             <div class="pfh-name">${pos.name || ""}</div>
+            <div class="pfh-industry" title="${sector ? `Sector: ${sector}` : ""}">${industryLabel}</div>
           </div>
           <div class="pfh-cell"><span>Qty</span>${pos.qty}</div>
           <div class="pfh-cell"><span>Avg</span>${money(pos.avgCost, pos.currency)}</div>
@@ -719,7 +1010,7 @@ function renderPortfolio() {
         </div>`;
       })
       .join("");
-    el.portfolioHoldings.innerHTML = rows;
+    el.portfolioHoldings.innerHTML = sectorHtml + rows;
     el.portfolioHoldings.querySelectorAll(".pfh-open").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1058,6 +1349,9 @@ function tradeCardHtml(q) {
       pos.avgCost,
       q.currency
     )}</b></div>
+      <div class="pos-row"><span>Industry</span><b>${
+        pos.industry || q.industry || pos.sector || q.sector || "—"
+      }</b></div>
       <div class="pos-row"><span>Market value</span><b>${money(
         value,
         q.currency
@@ -1112,7 +1406,10 @@ function wireTradeControls(q) {
   buyBtn.addEventListener("click", () => {
     const qty = Math.floor(Number(qtyEl.value) || 0);
     if (qty <= 0) return;
-    buyStock(q.symbol, qty, q.price, q.currency, q.name, sig);
+    buyStock(q.symbol, qty, q.price, q.currency, q.name, sig, {
+      industry: q.industry || null,
+      sector: q.sector || null,
+    });
     afterTrade(q, "buy", sig);
   });
   sellBtn.addEventListener("click", () => {
@@ -2265,6 +2562,7 @@ function openProfile() {
   el.pdWatch.textContent = String(watchN);
   el.pdHoldings.textContent = String(holdN);
   el.pdTrades.textContent = String(tradeN);
+  renderTraderClassification();
 
   // Stats (from the current per-user local data)
   el.statWatch.textContent = watchN;

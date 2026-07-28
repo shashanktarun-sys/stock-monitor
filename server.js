@@ -84,6 +84,82 @@ async function yahooFetch(pathAndQuery) {
   throw error;
 }
 
+// Sector / industry (changes rarely) — cached in memory for 24h.
+const industryCache = new Map(); // symbol -> { sector, industry, ts }
+const INDUSTRY_TTL_MS = 24 * 60 * 60 * 1000;
+
+const INDUSTRY_FALLBACK = {
+  AAPL: { sector: "Technology", industry: "Consumer Electronics" },
+  MSFT: { sector: "Technology", industry: "Software—Infrastructure" },
+  NVDA: { sector: "Technology", industry: "Semiconductors" },
+  TSLA: { sector: "Consumer Cyclical", industry: "Auto Manufacturers" },
+  AMZN: { sector: "Consumer Cyclical", industry: "Internet Retail" },
+  GOOGL: { sector: "Communication Services", industry: "Internet Content & Information" },
+  META: { sector: "Communication Services", industry: "Internet Content & Information" },
+  NFLX: { sector: "Communication Services", industry: "Entertainment" },
+  AMD: { sector: "Technology", industry: "Semiconductors" },
+  INTC: { sector: "Technology", industry: "Semiconductors" },
+  SPY: { sector: "Financial Services", industry: "Exchange Traded Fund" },
+  QQQ: { sector: "Financial Services", industry: "Exchange Traded Fund" },
+  "RELIANCE.NS": { sector: "Energy", industry: "Oil & Gas Refining & Marketing" },
+  "TCS.NS": { sector: "Technology", industry: "Information Technology Services" },
+  "HDFCBANK.NS": { sector: "Financial Services", industry: "Banks—Regional" },
+  "INFY.NS": { sector: "Technology", industry: "Information Technology Services" },
+  "ICICIBANK.NS": { sector: "Financial Services", industry: "Banks—Regional" },
+  "SBIN.NS": { sector: "Financial Services", industry: "Banks—Regional" },
+  "TATAMOTORS.NS": { sector: "Consumer Cyclical", industry: "Auto Manufacturers" },
+  "WIPRO.NS": { sector: "Technology", industry: "Information Technology Services" },
+  "ITC.NS": { sector: "Consumer Defensive", industry: "Tobacco" },
+  "BHARTIARTL.NS": { sector: "Communication Services", industry: "Telecom Services" },
+  "LT.NS": { sector: "Industrials", industry: "Engineering & Construction" },
+  "HINDUNILVR.NS": { sector: "Consumer Defensive", industry: "Household & Personal Products" },
+  "AXISBANK.NS": { sector: "Financial Services", industry: "Banks—Regional" },
+  "MARUTI.NS": { sector: "Consumer Cyclical", industry: "Auto Manufacturers" },
+  "HCLTECH.NS": { sector: "Technology", industry: "Information Technology Services" },
+  "SUNPHARMA.NS": { sector: "Healthcare", industry: "Drug Manufacturers—Specialty & Generic" },
+  "TITAN.NS": { sector: "Consumer Cyclical", industry: "Luxury Goods" },
+  "BAJFINANCE.NS": { sector: "Financial Services", industry: "Credit Services" },
+  "KOTAKBANK.NS": { sector: "Financial Services", industry: "Banks—Regional" },
+  "ASIANPAINT.NS": { sector: "Basic Materials", industry: "Specialty Chemicals" },
+  "ONGC.NS": { sector: "Energy", industry: "Oil & Gas Integrated" },
+  "ADANIENT.NS": { sector: "Energy", industry: "Thermal Coal" },
+};
+
+async function getIndustryLive(symbol) {
+  const q =
+    `/v10/finance/quoteSummary/${encodeURIComponent(symbol)}` +
+    `?modules=assetProfile,summaryProfile`;
+  const data = await yahooFetch(q);
+  const result = data?.quoteSummary?.result?.[0] || {};
+  const profile = result.assetProfile || result.summaryProfile || {};
+  const sector = (profile.sector || "").trim();
+  const industry = (profile.industry || "").trim();
+  if (!sector && !industry) return null;
+  return { sector: sector || null, industry: industry || null };
+}
+
+function getIndustryFallback(symbol) {
+  return INDUSTRY_FALLBACK[symbol] || { sector: null, industry: null };
+}
+
+async function getIndustryProfile(symbol) {
+  const cached = industryCache.get(symbol);
+  if (cached && Date.now() - cached.ts < INDUSTRY_TTL_MS) {
+    return { sector: cached.sector, industry: cached.industry };
+  }
+  let profile = null;
+  if (liveEnabled()) {
+    try {
+      profile = await getIndustryLive(symbol);
+    } catch (err) {
+      if (err.network) noteLiveFailure();
+    }
+  }
+  if (!profile) profile = getIndustryFallback(symbol);
+  industryCache.set(symbol, { ...profile, ts: Date.now() });
+  return profile;
+}
+
 async function getChartLive(symbol, range = "6mo", interval = "1d") {
   const q = `/v8/finance/chart/${encodeURIComponent(
     symbol
@@ -703,6 +779,21 @@ function analyze(candles) {
 // In-memory session store (sessionId -> { user, ts }). Cleared on restart.
 const sessions = new Map();
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const COOKIE_SECURE =
+  process.env.NODE_ENV === "production" ||
+  Boolean(process.env.RENDER) ||
+  Boolean(process.env.FORCE_SECURE_COOKIES);
+
+function sessionCookie(sid, maxAgeSec) {
+  let c = `sid=${sid}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSec}`;
+  if (COOKIE_SECURE) c += "; Secure";
+  return c;
+}
+function clearSessionCookie() {
+  let c = "sid=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0";
+  if (COOKIE_SECURE) c += "; Secure";
+  return c;
+}
 
 function parseCookies(req) {
   const header = req.headers.cookie || "";
@@ -1075,12 +1166,7 @@ const server = http.createServer(async (req, res) => {
         const user = await verifyGoogleCredential(body.credential);
         const sid = crypto.randomUUID();
         sessions.set(sid, { user, ts: Date.now() });
-        res.setHeader(
-          "Set-Cookie",
-          `sid=${sid}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(
-            SESSION_TTL_MS / 1000
-          )}`
-        );
+        res.setHeader("Set-Cookie", sessionCookie(sid, Math.floor(SESSION_TTL_MS / 1000)));
         return sendJson(res, 200, { user });
       } catch (err) {
         return sendJson(res, 401, { error: err.message });
@@ -1090,7 +1176,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/auth/logout" && req.method === "POST") {
       const sid = parseCookies(req).sid;
       if (sid) sessions.delete(sid);
-      res.setHeader("Set-Cookie", "sid=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0");
+      res.setHeader("Set-Cookie", clearSessionCookie());
       return sendJson(res, 200, { ok: true });
     }
 
@@ -1193,10 +1279,7 @@ const server = http.createServer(async (req, res) => {
       const sid = crypto.randomUUID();
       const sessionUser = sessionUserFromRecord(user);
       sessions.set(sid, { user: sessionUser, ts: Date.now() });
-      res.setHeader(
-        "Set-Cookie",
-        `sid=${sid}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
-      );
+      res.setHeader("Set-Cookie", sessionCookie(sid, Math.floor(SESSION_TTL_MS / 1000)));
       return sendJson(res, 200, { user: sessionUser });
     }
 
@@ -1211,10 +1294,7 @@ const server = http.createServer(async (req, res) => {
       const sid = crypto.randomUUID();
       const sessionUser = sessionUserFromRecord(user);
       sessions.set(sid, { user: sessionUser, ts: Date.now() });
-      res.setHeader(
-        "Set-Cookie",
-        `sid=${sid}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
-      );
+      res.setHeader("Set-Cookie", sessionCookie(sid, Math.floor(SESSION_TTL_MS / 1000)));
       return sendJson(res, 200, { user: sessionUser });
     }
 
@@ -1328,10 +1408,7 @@ const server = http.createServer(async (req, res) => {
       const sid = crypto.randomUUID();
       const sessionUser = sessionUserFromRecord(rec);
       sessions.set(sid, { user: sessionUser, ts: Date.now() });
-      res.setHeader(
-        "Set-Cookie",
-        `sid=${sid}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
-      );
+      res.setHeader("Set-Cookie", sessionCookie(sid, Math.floor(SESSION_TTL_MS / 1000)));
       return sendJson(res, 200, { user: sessionUser });
     }
 
@@ -1360,7 +1437,10 @@ const server = http.createServer(async (req, res) => {
       if (!symbol) return sendJson(res, 400, { error: "Missing symbol" });
       const range = url.searchParams.get("range") || "6mo";
       const interval = url.searchParams.get("interval") || "1d";
-      const { meta, candles, source } = await getChart(symbol, range, interval);
+      const [{ meta, candles, source }, industryProfile] = await Promise.all([
+        getChart(symbol, range, interval),
+        getIndustryProfile(symbol),
+      ]);
       if (candles.length < 2)
         return sendJson(res, 500, { error: "Not enough data to analyze" });
 
@@ -1371,6 +1451,8 @@ const server = http.createServer(async (req, res) => {
         currency: meta.currency || "USD",
         exchange: meta.fullExchangeName || meta.exchangeName || "",
         marketState: meta.marketState || "",
+        sector: industryProfile?.sector || null,
+        industry: industryProfile?.industry || null,
         source,
         price: meta.regularMarketPrice ?? analysis.indicators.price,
         previousClose: meta.chartPreviousClose ?? meta.previousClose ?? null,
@@ -1388,6 +1470,6 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`Stock monitor running at http://localhost:${PORT}`);
 });

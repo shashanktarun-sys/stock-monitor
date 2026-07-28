@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: pulse-stock-pal
+    runtime: node
+    plan: free
+    region: singapore
+    branch: master
+    buildCommand: "npm install --omit=dev || true"
+    startCommand: "npm start"
+    healthCheckPath: /api/config
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_NAME
+        value: Pulse Stock Pal

@@ -152,7 +152,7 @@
 
     <section class="portfolio-panel" id="portfolioPanel">
       <div class="panel-head">
-        <h2>Paper Portfolio</h2>
+        <h2>Paper Portfolio <span id="portfolioTraderType" class="trader-class-badge compact hidden"></span></h2>
         <button id="portfolioReset" class="ghost-btn small" title="Clear all holdings and history">
           Reset
         </button>
@@ -310,6 +310,15 @@
           </div>
         </div>
 
+        <div id="traderClassCard" class="trader-class-card">
+          <div class="trader-class-top">
+            <span class="trader-class-label">Trader type</span>
+            <span id="traderClassBadge" class="trader-class-badge">—</span>
+          </div>
+          <p id="traderClassSummary" class="trader-class-summary"></p>
+          <div id="traderClassTraits" class="trader-class-traits"></div>
+        </div>
+
         <div class="profile-details">
           <h3 class="profile-section-title">Personal details</h3>
           <div class="pd-row"><span>Full name</span><b id="pdName">—</b></div>
@@ -320,6 +329,7 @@
           <div class="pd-row"><span>Watchlist size</span><b id="pdWatch">—</b></div>
           <div class="pd-row"><span>Open holdings</span><b id="pdHoldings">—</b></div>
           <div class="pd-row"><span>Total trades</span><b id="pdTrades">—</b></div>
+          <div class="pd-row"><span>Trader type</span><b id="pdTraderType">—</b></div>
         </div>
 
         <div class="profile-stats">
