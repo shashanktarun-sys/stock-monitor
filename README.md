@@ -97,6 +97,11 @@ activated after the code is verified. Passwords are hashed with `scrypt` and
 accounts are stored in `data/users.json` (gitignored). Sessions use an HttpOnly
 `sid` cookie.
 
+**Cloud sync:** when signed in, your **watchlists, paper portfolio, chart
+settings, and market preference** are stored on the server under
+`data/userdata/` and restored on the next login — including from another
+browser or device. Guests still use browser `localStorage` only.
+
 ### Email delivery (SMTP)
 
 To actually send the OTP email, configure SMTP (implicit TLS, e.g. Gmail on port

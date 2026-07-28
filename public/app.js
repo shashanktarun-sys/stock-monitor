@@ -45,6 +45,7 @@ function loadPortfolio() {
 
 function savePortfolio() {
   localStorage.setItem(storageKey("portfolio"), JSON.stringify(state.portfolio));
+  scheduleServerSync();
 }
 
 function buyStock(symbol, qty, price, currency, name, signal) {
@@ -120,6 +121,7 @@ function loadChartConfig() {
 
 function saveChartConfig() {
   localStorage.setItem(storageKey("chartConfig"), JSON.stringify(state.chart));
+  scheduleServerSync();
 }
 
 function loadCountry() {
@@ -129,6 +131,7 @@ function loadCountry() {
 
 function saveCountry() {
   localStorage.setItem(storageKey("country"), state.country);
+  scheduleServerSync();
 }
 
 function loadWatchlist(country) {
@@ -144,6 +147,181 @@ function saveWatchlist() {
     storageKey(`watchlist:${state.country}`),
     JSON.stringify(state.watchlist)
   );
+  scheduleServerSync();
+}
+
+function loadMoversUniverse(country) {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem(storageKey(`moversUniverse:${country}`))
+    );
+    if (Array.isArray(saved) && saved.length) return saved;
+  } catch {}
+  return null; // null => use the server's default universe
+}
+
+function saveMoversUniverse(country, arr) {
+  if (arr && arr.length)
+    localStorage.setItem(storageKey(`moversUniverse:${country}`), JSON.stringify(arr));
+  else localStorage.removeItem(storageKey(`moversUniverse:${country}`));
+  scheduleServerSync();
+}
+
+/* --------------------------- Server sync (signed-in) --------------------- */
+
+let syncTimer = null;
+let syncInFlight = false;
+
+function buildSyncPayload() {
+  // Snapshot current country watchlist into the full watchlists map.
+  const wlUS =
+    state.country === "US"
+      ? state.watchlist
+      : JSON.parse(localStorage.getItem(storageKey("watchlist:US")) || "null");
+  const wlIN =
+    state.country === "IN"
+      ? state.watchlist
+      : JSON.parse(localStorage.getItem(storageKey("watchlist:IN")) || "null");
+  return {
+    country: state.country,
+    watchlists: {
+      US: Array.isArray(wlUS) ? wlUS : state.country === "US" ? state.watchlist : null,
+      IN: Array.isArray(wlIN) ? wlIN : state.country === "IN" ? state.watchlist : null,
+    },
+    portfolio: state.portfolio,
+    chartConfig: state.chart,
+    moversUniverse: {
+      US: loadMoversUniverse("US"),
+      IN: loadMoversUniverse("IN"),
+    },
+  };
+}
+
+function applyServerData(data) {
+  if (!data) return;
+  if (data.country === "IN" || data.country === "US") {
+    state.country = data.country;
+    localStorage.setItem(storageKey("country"), state.country);
+  }
+  if (data.watchlists) {
+    ["US", "IN"].forEach((c) => {
+      if (Array.isArray(data.watchlists[c]) && data.watchlists[c].length) {
+        localStorage.setItem(
+          storageKey(`watchlist:${c}`),
+          JSON.stringify(data.watchlists[c])
+        );
+      }
+    });
+  }
+  state.watchlist = loadWatchlist(state.country);
+
+  if (data.portfolio && data.portfolio.positions) {
+    state.portfolio = {
+      positions: data.portfolio.positions || {},
+      trades: data.portfolio.trades || [],
+      realized: data.portfolio.realized || {},
+    };
+    localStorage.setItem(storageKey("portfolio"), JSON.stringify(state.portfolio));
+  }
+
+  if (data.chartConfig && data.chartConfig.overlays) {
+    const defaults = {
+      type: "line",
+      overlays: { sma10: false, sma20: true, sma50: false, ema9: false, boll: false },
+      pane: "none",
+    };
+    state.chart = {
+      type: data.chartConfig.type === "candle" ? "candle" : "line",
+      overlays: { ...defaults.overlays, ...data.chartConfig.overlays },
+      pane: data.chartConfig.pane || "none",
+    };
+    localStorage.setItem(storageKey("chartConfig"), JSON.stringify(state.chart));
+  }
+
+  if (data.moversUniverse) {
+    ["US", "IN"].forEach((c) => {
+      const arr = data.moversUniverse[c];
+      if (Array.isArray(arr) && arr.length) {
+        localStorage.setItem(storageKey(`moversUniverse:${c}`), JSON.stringify(arr));
+      } else {
+        localStorage.removeItem(storageKey(`moversUniverse:${c}`));
+      }
+    });
+  }
+}
+
+function hasServerSideData(data) {
+  if (!data) return false;
+  const hasWl =
+    (Array.isArray(data.watchlists?.US) && data.watchlists.US.length) ||
+    (Array.isArray(data.watchlists?.IN) && data.watchlists.IN.length);
+  const hasPf =
+    data.portfolio &&
+    (Object.keys(data.portfolio.positions || {}).length > 0 ||
+      (data.portfolio.trades || []).length > 0);
+  return Boolean(hasWl || hasPf || data.updatedAt);
+}
+
+async function pullServerData() {
+  if (!currentUser) return null;
+  try {
+    const r = await fetch("/api/userdata");
+    if (!r.ok) return null;
+    const json = await r.json();
+    return json.data || null;
+  } catch {
+    return null;
+  }
+}
+
+async function pushServerData() {
+  if (!currentUser || syncInFlight) return;
+  syncInFlight = true;
+  try {
+    await fetch("/api/userdata", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: buildSyncPayload() }),
+    });
+  } catch {
+    // Offline / network — localStorage still has the latest copy.
+  } finally {
+    syncInFlight = false;
+  }
+}
+
+function scheduleServerSync() {
+  if (!currentUser) return;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    pushServerData();
+  }, 600);
+}
+
+// Flush pending sync when the tab goes to background.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && currentUser) {
+    if (syncTimer) {
+      clearTimeout(syncTimer);
+      syncTimer = null;
+    }
+    pushServerData();
+  }
+});
+
+async function syncOnLogin() {
+  if (!currentUser) return;
+  const remote = await pullServerData();
+  if (hasServerSideData(remote)) {
+    applyServerData(remote);
+  } else {
+    // First sync for this account: prefer this account's local cache, then upload.
+    state.country = loadCountry();
+    state.watchlist = loadWatchlist(state.country);
+    state.chart = loadChartConfig();
+    state.portfolio = loadPortfolio();
+    await pushServerData();
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -276,22 +454,6 @@ el.navPortfolio.addEventListener("click", () => {
   el.portfolioPanel.classList.add("flash");
   setTimeout(() => el.portfolioPanel.classList.remove("flash"), 1200);
 });
-
-function loadMoversUniverse(country) {
-  try {
-    const saved = JSON.parse(
-      localStorage.getItem(storageKey(`moversUniverse:${country}`))
-    );
-    if (Array.isArray(saved) && saved.length) return saved;
-  } catch {}
-  return null; // null => use the server's default universe
-}
-
-function saveMoversUniverse(country, arr) {
-  if (arr && arr.length)
-    localStorage.setItem(storageKey(`moversUniverse:${country}`), JSON.stringify(arr));
-  else localStorage.removeItem(storageKey(`moversUniverse:${country}`));
-}
 
 /* -------------------------------------------------------------------------- */
 /*  Formatting helpers                                                        */
@@ -1671,7 +1833,11 @@ function bootData() {
 }
 
 // Re-read namespaced storage into state after an auth change, then re-render.
-function reloadUserData() {
+async function reloadUserData() {
+  // Guests: local only. Signed-in: pull server copy (or upload local on first sync).
+  if (currentUser) {
+    await syncOnLogin();
+  }
   state.country = loadCountry();
   state.watchlist = loadWatchlist(state.country);
   state.chart = loadChartConfig();

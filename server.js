@@ -793,6 +793,87 @@ function saveUsers() {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Per-user synced app data (portfolio, watchlists, prefs)                   */
+/* -------------------------------------------------------------------------- */
+
+const USERDATA_DIR = path.join(DATA_DIR, "userdata");
+
+function userDataPath(sub) {
+  // Safe filename from session sub (email:uuid or google numeric id).
+  const safe = String(sub || "unknown").replace(/[^a-zA-Z0-9._-]+/g, "_");
+  return path.join(USERDATA_DIR, safe + ".json");
+}
+
+function defaultUserData() {
+  return {
+    country: "US",
+    watchlists: { US: null, IN: null }, // null => client uses defaults
+    portfolio: { positions: {}, trades: [], realized: {} },
+    chartConfig: null,
+    moversUniverse: { US: null, IN: null },
+    updatedAt: null,
+  };
+}
+
+function loadUserData(sub) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(userDataPath(sub), "utf8"));
+    if (!raw || typeof raw !== "object") return defaultUserData();
+    const base = defaultUserData();
+    return {
+      country: raw.country === "IN" || raw.country === "US" ? raw.country : base.country,
+      watchlists: {
+        US: Array.isArray(raw.watchlists?.US) ? raw.watchlists.US : null,
+        IN: Array.isArray(raw.watchlists?.IN) ? raw.watchlists.IN : null,
+      },
+      portfolio: {
+        positions: raw.portfolio?.positions || {},
+        trades: Array.isArray(raw.portfolio?.trades) ? raw.portfolio.trades : [],
+        realized: raw.portfolio?.realized || {},
+      },
+      chartConfig: raw.chartConfig || null,
+      moversUniverse: {
+        US: Array.isArray(raw.moversUniverse?.US) ? raw.moversUniverse.US : null,
+        IN: Array.isArray(raw.moversUniverse?.IN) ? raw.moversUniverse.IN : null,
+      },
+      updatedAt: raw.updatedAt || null,
+    };
+  } catch {
+    return defaultUserData();
+  }
+}
+
+function saveUserData(sub, data) {
+  fs.mkdirSync(USERDATA_DIR, { recursive: true });
+  const cleaned = {
+    country: data.country === "IN" || data.country === "US" ? data.country : "US",
+    watchlists: {
+      US: Array.isArray(data.watchlists?.US) ? data.watchlists.US.slice(0, 100) : null,
+      IN: Array.isArray(data.watchlists?.IN) ? data.watchlists.IN.slice(0, 100) : null,
+    },
+    portfolio: {
+      positions: data.portfolio?.positions || {},
+      trades: Array.isArray(data.portfolio?.trades)
+        ? data.portfolio.trades.slice(0, 500)
+        : [],
+      realized: data.portfolio?.realized || {},
+    },
+    chartConfig: data.chartConfig || null,
+    moversUniverse: {
+      US: Array.isArray(data.moversUniverse?.US)
+        ? data.moversUniverse.US.slice(0, 40)
+        : null,
+      IN: Array.isArray(data.moversUniverse?.IN)
+        ? data.moversUniverse.IN.slice(0, 40)
+        : null,
+    },
+    updatedAt: Date.now(),
+  };
+  fs.writeFileSync(userDataPath(sub), JSON.stringify(cleaned, null, 2));
+  return cleaned;
+}
+
 // Pending signups awaiting OTP: email -> { name, email, salt, hash, code, expires, sentAt, attempts }
 const pendingSignups = new Map();
 // Pending password resets: email -> { code, expires, sentAt, attempts }
@@ -1171,6 +1252,20 @@ const server = http.createServer(async (req, res) => {
       rec.hash = hash;
       saveUsers();
       return sendJson(res, 200, { ok: true });
+    }
+
+    if (pathname === "/api/userdata" && req.method === "GET") {
+      const user = getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      return sendJson(res, 200, { data: loadUserData(user.sub) });
+    }
+
+    if (pathname === "/api/userdata" && (req.method === "PUT" || req.method === "POST")) {
+      const user = getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      const body = await readJsonBody(req);
+      const saved = saveUserData(user.sub, body.data || body);
+      return sendJson(res, 200, { data: saved });
     }
 
     if (pathname === "/api/auth/forgot-password" && req.method === "POST") {
