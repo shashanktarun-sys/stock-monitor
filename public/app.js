@@ -517,7 +517,8 @@ function renderPortfolio() {
     const rows = symbols
       .map((sym) => {
         const pos = p.positions[sym];
-        const price = state.quotes[sym]?.price ?? pos.avgCost;
+        const q = state.quotes[sym];
+        const price = q?.price ?? pos.avgCost;
         const invested = pos.qty * pos.avgCost;
         const value = pos.qty * price;
         const upl = value - invested;
@@ -528,6 +529,14 @@ function renderPortfolio() {
               pos.buyScore != null ? ` ${pos.buyScore > 0 ? "+" : ""}${pos.buyScore}` : ""
             }</span>`
           : `<span class="muted-dash">—</span>`;
+        const curReco = q?.analysis?.recommendation || null;
+        const curScore = q?.analysis?.score;
+        const curSig = curReco
+          ? `<span class="badge ${badgeClass(curReco)}" title="Current Pulse signal">${curReco}${
+              curScore != null ? ` ${curScore > 0 ? "+" : ""}${curScore}` : ""
+            }</span>`
+          : `<span class="muted-dash">…</span>`;
+        const action = portfolioAction(pos.buySignal, curReco, uplPct);
         return `
         <div class="pf-holding" data-symbol="${sym}">
           <div class="pfh-main">
@@ -537,8 +546,9 @@ function renderPortfolio() {
           <div class="pfh-cell"><span>Qty</span>${pos.qty}</div>
           <div class="pfh-cell"><span>Avg</span>${money(pos.avgCost, pos.currency)}</div>
           <div class="pfh-cell"><span>Last</span>${money(price, pos.currency)}</div>
-          <div class="pfh-cell"><span>Value</span>${money(value, pos.currency)}</div>
           <div class="pfh-cell"><span>At buy</span>${buySig}</div>
+          <div class="pfh-cell"><span>Now</span>${curSig}</div>
+          <div class="pfh-cell"><span>Action</span><b class="pfh-action ${action.cls}">${action.label}</b></div>
           <div class="pfh-cell pnl ${cls}"><span>P&L</span>${signedMoney(
           upl,
           pos.currency
@@ -586,6 +596,24 @@ function renderPortfolio() {
 
 function pfMetric(label, val, cls = "") {
   return `<div class="pf-metric"><span>${label}</span><b class="${cls}">${val}</b></div>`;
+}
+
+/** Suggest an action from buy-time signal vs current Pulse signal + P&L. */
+function portfolioAction(buySignal, currentSignal, uplPct) {
+  const bearish = new Set(["SELL", "STRONG SELL"]);
+  const bullish = new Set(["BUY", "STRONG BUY"]);
+  if (!currentSignal) return { label: "Waiting…", cls: "muted" };
+  if (bearish.has(currentSignal)) {
+    if (uplPct >= 0) return { label: "Take profit", cls: "down" };
+    return { label: "Cut loss", cls: "down" };
+  }
+  if (bullish.has(currentSignal)) {
+    if (bearish.has(buySignal)) return { label: "Hold / add", cls: "up" };
+    return { label: "Hold", cls: "up" };
+  }
+  // HOLD
+  if (uplPct <= -5) return { label: "Review", cls: "muted" };
+  return { label: "Hold", cls: "muted" };
 }
 
 function updateNavPnl(totals) {

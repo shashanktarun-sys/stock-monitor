@@ -958,18 +958,30 @@ body {
 
 .pf-holding {
   display: grid;
-  grid-template-columns: 1.6fr repeat(6, 1fr) auto;
+  grid-template-columns: 1.4fr repeat(4, 0.9fr) 1.1fr 1.1fr 1fr 1.1fr auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
 }
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .pf-holding {
     grid-template-columns: 1fr 1fr 1fr;
   }
+}
+.pfh-action {
+  font-size: 12px;
+}
+.pfh-action.up {
+  color: var(--green);
+}
+.pfh-action.down {
+  color: var(--red);
+}
+.pfh-action.muted {
+  color: var(--muted);
 }
 .pfh-sym {
   font-weight: 700;
