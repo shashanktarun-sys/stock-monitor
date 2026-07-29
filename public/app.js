@@ -32,6 +32,7 @@ const state = {
   chart: loadChartConfig(),
   portfolio: loadPortfolio(),
   agents: loadAgents(),
+  portfolioBookTab: "pilot",
   pnlPeriod: loadPnlPeriod(),
   portfolioCountry: loadPortfolioCountry(),
   signalAlerts: loadSignalAlerts(),
@@ -668,6 +669,24 @@ const el = {
   moversMeta: document.getElementById("moversMeta"),
   portfolioSummary: document.getElementById("portfolioSummary"),
   portfolioAgentsSummary: document.getElementById("portfolioAgentsSummary"),
+  portfolioTabPilot: document.getElementById("portfolioTabPilot"),
+  portfolioTabAgents: document.getElementById("portfolioTabAgents"),
+  portfolioPilotPanel: document.getElementById("portfolioPilotPanel"),
+  portfolioAgentsPanel: document.getElementById("portfolioAgentsPanel"),
+  portfolioPilotCharts: document.getElementById("portfolioPilotCharts"),
+  portfolioPilotIndustryChart: document.getElementById("portfolioPilotIndustryChart"),
+  portfolioPilotIndustryLegend: document.getElementById("portfolioPilotIndustryLegend"),
+  portfolioPilotCapChart: document.getElementById("portfolioPilotCapChart"),
+  portfolioPilotCapLegend: document.getElementById("portfolioPilotCapLegend"),
+  portfolioPilotTradeMixChart: document.getElementById("portfolioPilotTradeMixChart"),
+  portfolioPilotTradeMixLegend: document.getElementById("portfolioPilotTradeMixLegend"),
+  portfolioAgentCharts: document.getElementById("portfolioAgentCharts"),
+  portfolioAgentIndustryChart: document.getElementById("portfolioAgentIndustryChart"),
+  portfolioAgentIndustryLegend: document.getElementById("portfolioAgentIndustryLegend"),
+  portfolioAgentCapChart: document.getElementById("portfolioAgentCapChart"),
+  portfolioAgentCapLegend: document.getElementById("portfolioAgentCapLegend"),
+  portfolioAgentTradeMixChart: document.getElementById("portfolioAgentTradeMixChart"),
+  portfolioAgentTradeMixLegend: document.getElementById("portfolioAgentTradeMixLegend"),
   portfolioHoldings: document.getElementById("portfolioHoldings"),
   tradeHistory: document.getElementById("tradeHistory"),
   tradeHistoryMeta: document.getElementById("tradeHistoryMeta"),
@@ -1642,6 +1661,14 @@ el.navPortfolio.addEventListener("click", () => {
   setPage("portfolio");
   el.portfolioPanel.classList.add("flash");
   setTimeout(() => el.portfolioPanel.classList.remove("flash"), 1200);
+});
+el.portfolioTabPilot?.addEventListener("click", () => {
+  setPortfolioBookTab("pilot");
+  renderPortfolio();
+});
+el.portfolioTabAgents?.addEventListener("click", () => {
+  setPortfolioBookTab("agents");
+  renderPortfolio();
 });
 el.navBasket?.addEventListener("click", () => setPage("basket"));
 el.navAnalyze?.addEventListener("click", () => setPage("analyze"));
@@ -2813,6 +2840,36 @@ function renderDiversifyPieLegend(container, slices, currency) {
     .join("");
 }
 
+function renderBookAllocationCharts(config) {
+  if (!config?.wrap) return;
+  const { rows = [], trades = [], currency = "USD" } = config;
+  if (!rows.length && !trades.length) {
+    config.wrap.classList.add("hidden");
+    return;
+  }
+  const industrySlices = aggregateBasketSlices(rows, (r) => r.industry || r.sector || "Unknown");
+  const capSlices = aggregateBasketSlices(rows, (r) => {
+    if (r.capLabel) return r.capLabel;
+    if (r.capBucket === "large") return "Large Cap";
+    if (r.capBucket === "mid") return "Mid Cap";
+    if (r.capBucket === "small") return "Small Cap";
+    return "Unknown";
+  });
+  const tradeMixRows = trades.map((t) => ({
+    spend: Math.abs((t.qty || 0) * (t.price || 0)),
+    kind: t.side === "SELL" ? "Sells" : "Buys",
+  }));
+  const tradeMixSlices = aggregateBasketSlices(tradeMixRows, (r) => r.kind);
+
+  drawDiversifyPie(config.industryChart, industrySlices);
+  drawDiversifyPie(config.capChart, capSlices);
+  drawDiversifyPie(config.tradeMixChart, tradeMixSlices);
+  renderDiversifyPieLegend(config.industryLegend, industrySlices, currency);
+  renderDiversifyPieLegend(config.capLegend, capSlices, currency);
+  renderDiversifyPieLegend(config.tradeMixLegend, tradeMixSlices, currency);
+  config.wrap.classList.remove("hidden");
+}
+
 function renderDiversifyCharts(plan) {
   if (!el.diversifyCharts || !plan?.rows?.length) {
     el.diversifyCharts?.classList.add("hidden");
@@ -3181,6 +3238,53 @@ function collectAgentPortfolioView(countryFilter) {
   return { summaries, holdings, trades };
 }
 
+function setPortfolioBookTab(tab) {
+  state.portfolioBookTab = tab === "agents" ? "agents" : "pilot";
+  el.portfolioTabPilot?.classList.toggle("active", state.portfolioBookTab === "pilot");
+  el.portfolioTabAgents?.classList.toggle("active", state.portfolioBookTab === "agents");
+  el.portfolioTabPilot?.setAttribute(
+    "aria-selected",
+    state.portfolioBookTab === "pilot" ? "true" : "false"
+  );
+  el.portfolioTabAgents?.setAttribute(
+    "aria-selected",
+    state.portfolioBookTab === "agents" ? "true" : "false"
+  );
+  el.portfolioPilotPanel?.classList.toggle("hidden", state.portfolioBookTab !== "pilot");
+  el.portfolioAgentsPanel?.classList.toggle("hidden", state.portfolioBookTab !== "agents");
+  el.portfolioAnalyzeBtn?.classList.toggle("hidden", state.portfolioBookTab !== "pilot");
+  el.portfolioReset?.classList.toggle("hidden", state.portfolioBookTab !== "pilot");
+}
+
+function buildPilotAllocationRows(symbols, portfolio) {
+  return symbols.map((sym) => {
+    const pos = portfolio.positions[sym];
+    const q = state.quotes[sym];
+    const price = q?.price ?? pos.avgCost;
+    return {
+      symbol: sym,
+      qty: pos.qty,
+      spend: pos.qty * price,
+      industry: pos.industry || q?.industry || null,
+      sector: pos.sector || q?.sector || "Unknown",
+      capLabel: pos.capLabel || q?.capLabel || null,
+      capBucket: pos.capBucket || q?.capBucket || null,
+    };
+  });
+}
+
+function buildAgentAllocationRows(agentHoldings) {
+  return agentHoldings.map((h) => ({
+    symbol: h.symbol,
+    qty: h.pos.qty,
+    spend: h.pos.qty * h.price,
+    industry: h.pos.industry || null,
+    sector: h.pos.sector || "Unknown",
+    capLabel: h.pos.capLabel || null,
+    capBucket: h.pos.capBucket || null,
+  }));
+}
+
 function renderAgentPortfolioSummary(countryFilter) {
   if (!el.portfolioAgentsSummary) return;
   const { summaries, holdings } = collectAgentPortfolioView(countryFilter);
@@ -3289,6 +3393,7 @@ function renderPortfolio() {
   renderTraderClassification();
   syncPnlPeriodUI();
   syncDiversifyCountryUI();
+  setPortfolioBookTab(state.portfolioBookTab);
   const p = state.portfolio;
   const countryFilter = state.portfolioCountry || "ALL";
   const matchCountry = (symbol, currency) =>
@@ -3360,6 +3465,8 @@ function renderPortfolio() {
       </div>
       <div class="pf-empty">No Pilot book activity yet. Open a stock and click <b>Buy</b>.</div>`;
     renderAgentPortfolioSummary(countryFilter);
+    el.portfolioPilotCharts?.classList.add("hidden");
+    el.portfolioAgentCharts?.classList.add("hidden");
     el.portfolioHoldings.innerHTML = "";
     el.tradeHistory.innerHTML = "";
     if (el.tradeHistoryMeta) el.tradeHistoryMeta.textContent = "";
@@ -3381,6 +3488,19 @@ function renderPortfolio() {
       countryFilter
     )} Pilot activity for <b>${range.label}</b>.</div>`;
     renderAgentPortfolioSummary(countryFilter);
+    el.portfolioPilotCharts?.classList.add("hidden");
+    renderBookAllocationCharts({
+      wrap: el.portfolioAgentCharts,
+      rows: buildAgentAllocationRows(agentView.holdings),
+      trades: agentView.trades,
+      currency: agentView.summaries[0]?.currency || "USD",
+      industryChart: el.portfolioAgentIndustryChart,
+      industryLegend: el.portfolioAgentIndustryLegend,
+      capChart: el.portfolioAgentCapChart,
+      capLegend: el.portfolioAgentCapLegend,
+      tradeMixChart: el.portfolioAgentTradeMixChart,
+      tradeMixLegend: el.portfolioAgentTradeMixLegend,
+    });
     el.portfolioHoldings.innerHTML = "";
     el.tradeHistory.innerHTML = `<div class="pf-empty">No trades match this country filter.</div>`;
     if (el.tradeHistoryMeta) el.tradeHistoryMeta.textContent = "(0)";
@@ -3460,6 +3580,30 @@ function renderPortfolio() {
     </div>
     <div class="portfolio-summary pilot-pf-cards">${pilotCards}</div>`;
   renderAgentPortfolioSummary(countryFilter);
+  renderBookAllocationCharts({
+    wrap: el.portfolioPilotCharts,
+    rows: buildPilotAllocationRows(symbols, p),
+    trades: filteredTrades,
+    currency: [...currencies][0] || "USD",
+    industryChart: el.portfolioPilotIndustryChart,
+    industryLegend: el.portfolioPilotIndustryLegend,
+    capChart: el.portfolioPilotCapChart,
+    capLegend: el.portfolioPilotCapLegend,
+    tradeMixChart: el.portfolioPilotTradeMixChart,
+    tradeMixLegend: el.portfolioPilotTradeMixLegend,
+  });
+  renderBookAllocationCharts({
+    wrap: el.portfolioAgentCharts,
+    rows: buildAgentAllocationRows(agentView.holdings),
+    trades: agentView.trades,
+    currency: agentView.summaries[0]?.currency || "USD",
+    industryChart: el.portfolioAgentIndustryChart,
+    industryLegend: el.portfolioAgentIndustryLegend,
+    capChart: el.portfolioAgentCapChart,
+    capLegend: el.portfolioAgentCapLegend,
+    tradeMixChart: el.portfolioAgentTradeMixChart,
+    tradeMixLegend: el.portfolioAgentTradeMixLegend,
+  });
 
   if (!symbols.length) {
     el.portfolioHoldings.innerHTML = `<div class="agent-pf-holdings-label">Pilot holdings</div><div class="pf-empty">No open Pilot positions. Agent holdings are in the Agent books panel.</div>`;
@@ -3567,16 +3711,14 @@ function renderPortfolio() {
     });
   }
 
-  const combinedTrades = [...filteredTrades, ...agentView.trades]
+  const visibleTrades = state.portfolioBookTab === "agents" ? agentView.trades : filteredTrades;
+  const combinedTrades = visibleTrades
     .filter((t) => tradeInRange(t, range.start, range.end))
     .sort((a, b) => (b.ts || 0) - (a.ts || 0));
 
   if (el.tradeHistoryMeta) {
-    const agentN = combinedTrades.filter((t) => t.source === "agent" || t.agentId).length;
-    el.tradeHistoryMeta.textContent =
-      agentN > 0
-        ? `(${combinedTrades.length} · ${agentN} agent)`
-        : `(${combinedTrades.length})`;
+    const label = state.portfolioBookTab === "agents" ? "agent" : "pilot";
+    el.tradeHistoryMeta.textContent = `(${combinedTrades.length} ${label})`;
   }
   el.tradeHistory.innerHTML =
     combinedTrades

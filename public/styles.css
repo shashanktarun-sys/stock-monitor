@@ -1190,6 +1190,41 @@ body {
   padding: 0 16px 8px;
 }
 
+.portfolio-book-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 12px;
+}
+.portfolio-book-tab {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 7px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.portfolio-book-tab.active {
+  color: var(--text);
+  background: rgba(79, 124, 255, 0.18);
+  border-color: var(--accent);
+}
+.portfolio-book-panel-wrap.hidden,
+.portfolio-book-charts.hidden {
+  display: none;
+}
+.portfolio-book-panel-wrap {
+  margin-bottom: 8px;
+}
+.portfolio-book-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+  padding: 0 16px 12px;
+}
+
 .diversify-panel {
   margin: 4px 16px 14px;
   padding: 14px;

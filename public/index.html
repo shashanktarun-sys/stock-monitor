@@ -248,11 +248,65 @@
           <button type="button" class="mini-btn" id="pnlCustomApply">Apply</button>
         </div>
       </div>
-      <div class="portfolio-dashboard" id="portfolioDashboard">
-        <div id="portfolioSummary" class="portfolio-summary pf-book-panel"></div>
-        <div id="portfolioAgentsSummary" class="portfolio-agents-summary pf-book-panel"></div>
+      <div class="portfolio-book-tabs" role="tablist" aria-label="Portfolio books">
+        <button type="button" id="portfolioTabPilot" class="portfolio-book-tab active" aria-selected="true">Pilot</button>
+        <button type="button" id="portfolioTabAgents" class="portfolio-book-tab" aria-selected="false">Agents</button>
       </div>
-      <div id="portfolioHoldings" class="portfolio-holdings"></div>
+
+      <section id="portfolioPilotPanel" class="portfolio-book-panel-wrap">
+        <div id="portfolioSummary" class="portfolio-summary pf-book-panel"></div>
+        <div id="portfolioPilotCharts" class="portfolio-book-charts hidden">
+          <div class="diversify-chart-card">
+            <h4>By industry</h4>
+            <div class="diversify-chart-body">
+              <canvas id="portfolioPilotIndustryChart" width="180" height="180" aria-label="Pilot industry allocation"></canvas>
+              <div id="portfolioPilotIndustryLegend" class="diversify-chart-legend"></div>
+            </div>
+          </div>
+          <div class="diversify-chart-card">
+            <h4>By company cap</h4>
+            <div class="diversify-chart-body">
+              <canvas id="portfolioPilotCapChart" width="180" height="180" aria-label="Pilot cap allocation"></canvas>
+              <div id="portfolioPilotCapLegend" class="diversify-chart-legend"></div>
+            </div>
+          </div>
+          <div class="diversify-chart-card">
+            <h4>Trade mix</h4>
+            <div class="diversify-chart-body">
+              <canvas id="portfolioPilotTradeMixChart" width="180" height="180" aria-label="Pilot trade mix"></canvas>
+              <div id="portfolioPilotTradeMixLegend" class="diversify-chart-legend"></div>
+            </div>
+          </div>
+        </div>
+        <div id="portfolioHoldings" class="portfolio-holdings"></div>
+      </section>
+
+      <section id="portfolioAgentsPanel" class="portfolio-book-panel-wrap hidden">
+        <div id="portfolioAgentsSummary" class="portfolio-agents-summary pf-book-panel"></div>
+        <div id="portfolioAgentCharts" class="portfolio-book-charts hidden">
+          <div class="diversify-chart-card">
+            <h4>By industry</h4>
+            <div class="diversify-chart-body">
+              <canvas id="portfolioAgentIndustryChart" width="180" height="180" aria-label="Agent industry allocation"></canvas>
+              <div id="portfolioAgentIndustryLegend" class="diversify-chart-legend"></div>
+            </div>
+          </div>
+          <div class="diversify-chart-card">
+            <h4>By company cap</h4>
+            <div class="diversify-chart-body">
+              <canvas id="portfolioAgentCapChart" width="180" height="180" aria-label="Agent cap allocation"></canvas>
+              <div id="portfolioAgentCapLegend" class="diversify-chart-legend"></div>
+            </div>
+          </div>
+          <div class="diversify-chart-card">
+            <h4>Trade mix</h4>
+            <div class="diversify-chart-body">
+              <canvas id="portfolioAgentTradeMixChart" width="180" height="180" aria-label="Agent trade mix"></canvas>
+              <div id="portfolioAgentTradeMixLegend" class="diversify-chart-legend"></div>
+            </div>
+          </div>
+        </div>
+      </section>
       <details class="trade-history-wrap" open>
         <summary>Trade history <span id="tradeHistoryMeta" class="trade-history-meta"></span></summary>
         <div id="tradeHistory" class="trade-history"></div>
