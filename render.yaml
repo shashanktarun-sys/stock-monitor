@@ -22,6 +22,7 @@ services:
           property: connectionString
       # Optional auth extras (set in Dashboard):
       # GOOGLE_CLIENT_ID, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+      # BROKER_TOKEN_SECRET — encrypts Shoonya session tokens at rest (recommended)
 
 databases:
   - name: pulse-db
