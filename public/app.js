@@ -915,11 +915,9 @@ const el = {
   shoonyaStatus: document.getElementById("shoonyaStatus"),
   shoonyaConnectForm: document.getElementById("shoonyaConnectForm"),
   shoonyaUserId: document.getElementById("shoonyaUserId"),
-  shoonyaPassword: document.getElementById("shoonyaPassword"),
-  shoonyaTwoFA: document.getElementById("shoonyaTwoFA"),
   shoonyaApiSecret: document.getElementById("shoonyaApiSecret"),
-  shoonyaVendorCode: document.getElementById("shoonyaVendorCode"),
-  shoonyaImei: document.getElementById("shoonyaImei"),
+  shoonyaAuthCode: document.getElementById("shoonyaAuthCode"),
+  shoonyaAuthCodeBtn: document.getElementById("shoonyaAuthCodeBtn"),
   shoonyaMsg: document.getElementById("shoonyaMsg"),
   shoonyaConnectBtn: document.getElementById("shoonyaConnectBtn"),
   shoonyaDisconnectBtn: document.getElementById("shoonyaDisconnectBtn"),
@@ -6949,32 +6947,53 @@ function updateShoonyaProfileUI() {
   }
 }
 
+el.shoonyaAuthCodeBtn?.addEventListener("click", async () => {
+  if (!currentUser) return showLogin("signin");
+  const userid = String(el.shoonyaUserId?.value || "").trim();
+  if (!userid) return showMsg(el.shoonyaMsg, "Enter your User ID first.", false);
+  clearMsg(el.shoonyaMsg);
+  try {
+    const r = await fetch(`/api/broker/shoonya/authorize-url?userid=${encodeURIComponent(userid)}`);
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "Could not build authorize URL");
+    window.open(j.url, "_blank", "noopener");
+    showMsg(
+      el.shoonyaMsg,
+      "Shoonya login opened. After login, copy code=… from the address bar into Auth code, then Connect.",
+      true
+    );
+  } catch (err) {
+    // Fallback: open URL client-side
+    const clientId = userid.toUpperCase().endsWith("_U") ? userid.toUpperCase() : `${userid.toUpperCase()}_U`;
+    window.open(
+      `https://api.shoonya.com/OAuthlogin/authorize/oauth?client_id=${encodeURIComponent(clientId)}`,
+      "_blank",
+      "noopener"
+    );
+    showMsg(
+      el.shoonyaMsg,
+      err.message || "Opened Shoonya authorize page. Paste the auth code when done.",
+      true
+    );
+  }
+});
+
 el.shoonyaConnectForm?.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!currentUser) return showLogin("signin");
   clearMsg(el.shoonyaMsg);
   const userid = String(el.shoonyaUserId?.value || "").trim();
-  const password = String(el.shoonyaPassword?.value || "");
-  const twoFA = String(el.shoonyaTwoFA?.value || "").trim();
   const apiSecret = String(el.shoonyaApiSecret?.value || "").trim();
-  const vendorCode = String(el.shoonyaVendorCode?.value || "").trim();
-  const imei = String(el.shoonyaImei?.value || "").trim();
-  if (!userid || !password || !twoFA || !apiSecret) {
-    return showMsg(el.shoonyaMsg, "Fill user id, password, 2FA, and API secret.", false);
+  const authCode = String(el.shoonyaAuthCode?.value || "").trim();
+  if (!userid || !apiSecret || !authCode) {
+    return showMsg(el.shoonyaMsg, "Fill User ID, API secret, and OAuth auth code.", false);
   }
   el.shoonyaConnectBtn.disabled = true;
   try {
     const r = await fetch("/api/broker/shoonya/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userid,
-        password,
-        twoFA,
-        apiSecret,
-        vendorCode: vendorCode || undefined,
-        imei: imei || undefined,
-      }),
+      body: JSON.stringify({ userid, apiSecret, authCode }),
     });
     const text = await r.text();
     let j = {};
@@ -6983,16 +7002,15 @@ el.shoonyaConnectForm?.addEventListener("submit", async (e) => {
     } catch {
       throw new Error(
         r.status === 404
-          ? "Connect endpoint missing — server needs redeploy/restart with Shoonya support."
+          ? "Connect endpoint missing — server needs redeploy/restart."
           : `Connect failed (HTTP ${r.status}): ${text.slice(0, 180) || "empty response"}`
       );
     }
     if (!r.ok) throw new Error(j.error || `Connect failed (HTTP ${r.status})`);
     state.shoonyaConnected = true;
     state.shoonyaUid = j.uid || userid;
-    if (el.shoonyaPassword) el.shoonyaPassword.value = "";
-    if (el.shoonyaTwoFA) el.shoonyaTwoFA.value = "";
     if (el.shoonyaApiSecret) el.shoonyaApiSecret.value = "";
+    if (el.shoonyaAuthCode) el.shoonyaAuthCode.value = "";
     updateShoonyaProfileUI();
     showMsg(el.shoonyaMsg, j.message || "Shoonya connected.", true);
   } catch (err) {

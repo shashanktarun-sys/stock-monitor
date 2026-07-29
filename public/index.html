@@ -831,9 +831,14 @@
         <div id="profileBrokerWrap" class="profile-section">
           <h3>Broker — Shoonya (live India)</h3>
           <p class="login-sub" style="margin:0 0 10px">
-            Connect your Finvasia / Shoonya account to place <b>real</b> equity orders from Pulse.
-            Paper trading stays the default until you choose Live.
+            Shoonya moved to <b>OAuth API login</b> (Apr 2026). Password / 2FA / vendor / IMEI are no longer used here.
+            Connect with your client ID, API secret, and a one-time auth code.
           </p>
+          <ol class="broker-steps">
+            <li>In <a href="https://trade.shoonya.com/" target="_blank" rel="noopener">trade.shoonya.com</a> → profile → API Key: copy the <b>secret code</b> and whitelist this machine’s public IP.</li>
+            <li>Enter User ID + secret below, click <b>Get auth code</b>, log in on Shoonya’s page.</li>
+            <li>Copy the <code>code=...</code> from the browser address bar (or paste the whole URL), then Connect.</li>
+          </ol>
           <div id="shoonyaStatus" class="broker-status">Not connected</div>
           <form id="shoonyaConnectForm" class="auth-form">
             <label class="field">
@@ -841,26 +846,17 @@
               <input id="shoonyaUserId" type="text" autocomplete="username" placeholder="FA12345" required />
             </label>
             <label class="field">
-              <span>Password</span>
-              <input id="shoonyaPassword" type="password" autocomplete="current-password" required />
-            </label>
-            <label class="field">
-              <span>2FA / TOTP code</span>
-              <input id="shoonyaTwoFA" type="text" inputmode="numeric" autocomplete="one-time-code"
-                     placeholder="Authenticator code" required />
-            </label>
-            <label class="field">
               <span>API secret</span>
               <input id="shoonyaApiSecret" type="password" autocomplete="off"
-                     placeholder="From Shoonya API settings" required />
+                     placeholder="Secret from trade.shoonya.com API Key" required />
             </label>
+            <div class="agent-create-actions" style="margin:8px 0">
+              <button type="button" class="mini-btn secondary" id="shoonyaAuthCodeBtn">Get auth code</button>
+            </div>
             <label class="field">
-              <span>Vendor code <small>(optional — defaults to UserID_U)</small></span>
-              <input id="shoonyaVendorCode" type="text" placeholder="FA12345_U" />
-            </label>
-            <label class="field">
-              <span>IMEI <small>(from Prism API Key screen)</small></span>
-              <input id="shoonyaImei" type="text" placeholder="Shown next to API key" />
+              <span>OAuth auth code</span>
+              <input id="shoonyaAuthCode" type="text" autocomplete="off"
+                     placeholder="Paste code=… or full redirect URL" required />
             </label>
             <div id="shoonyaMsg" class="auth-msg hidden"></div>
             <div class="agent-create-actions" style="margin-top:10px">
@@ -869,8 +865,8 @@
             </div>
           </form>
           <p class="pf-note" style="margin-top:10px">
-            Credentials are sent to Pulse server only to create a Shoonya session. Session tokens are encrypted at rest.
-            Generate your API secret in the Shoonya app / Prism API settings. Enable API access on your account first.
+            GenAcsTok must run from a <b>whitelisted IP</b> (set in Shoonya API settings).
+            If Pulse is on Render, whitelist Render’s outbound IP or connect from a local Pulse server whose IP you whitelisted.
           </p>
         </div>
 

@@ -1,6 +1,7 @@
 /**
  * Shoonya (Finvasia) live broker adapter.
- * Uses classic QuickAuth (userid + password + 2FA + API secret) against NorenWClientTP.
+ * Retail auth (from Apr 2026): OAuth authorize → GenAcsTok access_token (Bearer).
+ * QuickAuth / vendor code / IMEI are obsolete for retail accounts.
  * Does NOT fill the paper portfolio — broker is source of truth for live orders.
  */
 import crypto from "node:crypto";
@@ -8,22 +9,26 @@ import { VENUES } from "./types.js";
 import { insertOrder, getBrokerConnection, upsertBrokerConnection } from "../lib/store.js";
 
 const HOST_API = "https://api.shoonya.com/NorenWClientAPI";
-const HOST_TP = "https://api.shoonya.com/NorenWClientTP";
 
 function sha256Hex(text) {
   return crypto.createHash("sha256").update(String(text), "utf8").digest("hex");
 }
 
-async function shoonyaPost(endpoint, jData, jKey = null, { allowEmpty = false, host } = {}) {
-  // Shoonya/Noren expects raw `jData={json}` (and optional `&jKey=...`).
-  // As of 2026, NorenWClientTP often returns nginx 502; NorenWClientAPI is the live path.
-  let body = `jData=${JSON.stringify(jData)}`;
-  if (jKey) body += `&jKey=${jKey}`;
+/** OAuth authorize URL — open this, log in, then copy `code` from the redirect URL. */
+export function shoonyaAuthorizeUrl(userid) {
+  const uid = String(userid || "").trim().toUpperCase();
+  const clientId = uid.endsWith("_U") ? uid : `${uid}_U`;
+  return `https://api.shoonya.com/OAuthlogin/authorize/oauth?client_id=${encodeURIComponent(clientId)}`;
+}
 
-  const base = host || HOST_API;
-  const url = `${base}/${endpoint}`;
+async function shoonyaPost(endpoint, jData, accessToken = null, { allowEmpty = false } = {}) {
+  // Shoonya expects raw `jData={json}` (+ optional Bearer access token).
+  const body = `jData=${JSON.stringify(jData)}`;
+  const url = `${HOST_API}/${endpoint}`;
   const headers = { "Content-Type": "text/plain" };
-  if (jKey) headers.Authorization = `Bearer ${jKey}`;
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
 
   let res;
   let text;
@@ -37,16 +42,14 @@ async function shoonyaPost(endpoint, jData, jKey = null, { allowEmpty = false, h
   }
 
   console.log(
-    `[shoonya] ${base.split(".com")[1] || ""}/${endpoint} http=${res.status} body=${String(text).slice(0, 300)}`
+    `[shoonya] /${endpoint} http=${res.status} body=${String(text).slice(0, 300)}`
   );
 
-  // TP gateway sometimes returns HTML 502 — caller may retry on API host
   if (res.status >= 500 && /bad gateway|html/i.test(text)) {
     const err = new Error(
-      `Shoonya gateway error (${res.status}) on ${endpoint}. Their API host may be down — try again shortly.`
+      `Shoonya gateway error (${res.status}) on ${endpoint}. Try again shortly.`
     );
     err.status = 502;
-    err.gateway = true;
     throw err;
   }
 
@@ -80,7 +83,6 @@ async function shoonyaPost(endpoint, jData, jKey = null, { allowEmpty = false, h
  * Map Pulse symbols to Shoonya equity contract.
  * RELIANCE.NS → { exch: "NSE", tsym: "RELIANCE-EQ" }
  * SBIN.BO → { exch: "BSE", tsym: "SBIN-EQ" }
- * RELIANCE → { exch: "NSE", tsym: "RELIANCE-EQ" } (default NSE)
  */
 export function mapPulseSymbolToShoonya(symbol) {
   const raw = String(symbol || "").toUpperCase().trim();
@@ -94,112 +96,70 @@ export function mapPulseSymbolToShoonya(symbol) {
     exch = "BSE";
     base = raw.replace(/\.BO$|\.BSE$/, "");
   }
-  // Equity cash contracts use -EQ suffix on Shoonya
   const tsym = base.includes("-") ? base : `${base}-EQ`;
   return { exch, tsym, base };
 }
 
 /**
- * Login with personal API credentials. Returns session tokens to store.
+ * OAuth token exchange (retail flow since Apr 2026).
+ * checksum = SHA256(clientId + secretCode + authCode) with no separators.
+ * clientId for OAuth is typically UserID_U.
  */
-export async function shoonyaLogin({
-  userid,
-  password,
-  twoFA,
-  apiSecret,
-  vendorCode,
-  imei,
-}) {
-  const uid = String(userid || "").trim();
-  const pwdPlain = String(password || "");
-  const factor2 = String(twoFA || "").trim();
+export async function shoonyaLogin({ userid, apiSecret, authCode, clientId }) {
+  const uid = String(userid || "").trim().toUpperCase();
   const secret = String(apiSecret || "").trim();
-  const vc = String(vendorCode || `${uid}_U`).trim();
-  // IMEI from Prism API Key screen is preferred; fallback is fine for many accounts
-  const device = String(imei || "abc1234").trim() || "abc1234";
+  let code = String(authCode || "").trim();
+  // Allow pasting a full redirect URL that contains ?code=...
+  try {
+    if (/code=/i.test(code)) {
+      const u = new URL(code.includes("://") ? code : `https://x/?${code.replace(/^\?/, "")}`);
+      code = u.searchParams.get("code") || code;
+    }
+  } catch {
+    /* keep raw code */
+  }
+  const oauthClientId = String(clientId || (uid.endsWith("_U") ? uid : `${uid}_U`)).trim();
 
-  if (!uid || !pwdPlain || !factor2 || !secret) {
-    const err = new Error("User ID, password, 2FA, and API secret are required");
+  if (!uid || !secret || !code) {
+    const err = new Error(
+      "User ID, API secret (from trade.shoonya.com), and OAuth auth code are required"
+    );
     err.status = 400;
     throw err;
   }
 
-  const payload = {
-    source: "API",
-    apkversion: "1.0.0",
-    uid,
-    pwd: sha256Hex(pwdPlain),
-    factor2,
-    vc,
-    appkey: sha256Hex(`${uid}|${secret}`),
-    imei: device,
-  };
-
+  const checksum = sha256Hex(`${oauthClientId}${secret}${code}`);
   console.log(
-    `[shoonya] QuickAuth uid=${uid} vc=${vc} imei=${device} factor2_len=${factor2.length}`
+    `[shoonya] GenAcsTok uid=${uid} clientId=${oauthClientId} code_len=${code.length}`
   );
 
-  async function attempt(appkey) {
-    // Prefer live API host; fall back to classic TP if API rejects unexpectedly
-    try {
-      return await shoonyaPost("QuickAuth", { ...payload, appkey }, null, {
-        host: HOST_API,
-      });
-    } catch (err) {
-      if (err.gateway) {
-        return shoonyaPost("QuickAuth", { ...payload, appkey }, null, {
-          host: HOST_TP,
-        });
-      }
-      throw err;
-    }
-  }
+  const data = await shoonyaPost("GenAcsTok", {
+    uid,
+    code,
+    checksum,
+  });
 
-  let data;
-  try {
-    data = await attempt(sha256Hex(`${uid}|${secret}`));
-  } catch (err) {
-    const msg = String(err.message || "").toLowerCase();
-    if (/appkey|api key|vendor|invalid input/i.test(msg)) {
-      console.log("[shoonya] retrying QuickAuth with raw/prism appkey variants");
-      const alts = [];
-      if (secret.length === 64 && /^[a-f0-9]+$/i.test(secret)) {
-        alts.push(secret.toLowerCase());
-      }
-      alts.push(secret); // raw Prism secret as appkey
-      alts.push(sha256Hex(secret));
-      let last = err;
-      for (const alt of alts) {
-        try {
-          data = await attempt(alt);
-          last = null;
-          break;
-        } catch (e2) {
-          last = e2;
-        }
-      }
-      if (last) throw last;
-    } else {
-      throw err;
-    }
-  }
-  const token = data.susertoken || data.access_token;
+  const token = data.access_token || data.susertoken;
   if (!token) {
-    const err = new Error(data.emsg || "Shoonya login did not return a session token");
+    const err = new Error(
+      data.emsg ||
+        "Shoonya did not return an access token. Whitelist this server's public IP in Shoonya API settings, then retry with a fresh auth code."
+    );
     err.status = 401;
     throw err;
   }
 
   return {
-    susertoken: token,
-    uid: data.uid || uid,
-    actid: data.actid || data.accountId || uid,
+    susertoken: token, // used as Bearer
+    accessToken: token,
+    uid: data.USERID || data.uid || uid,
+    actid: data.actid || data.accountId || data.USERID || uid,
     uname: data.uname || data.userName || "",
     email: data.email || "",
     exarr: data.exarr || [],
     loggedInAt: Date.now(),
-    vendorCode: vc,
-    imei: device,
+    clientId: oauthClientId,
+    authMethod: "oauth",
     apiSecretFingerprint: sha256Hex(secret).slice(0, 12),
   };
 }
@@ -223,7 +183,6 @@ async function withSession(userSub, fn) {
   try {
     return await fn(conn.tokens);
   } catch (err) {
-    // Session expiry — mark disconnected so UI prompts reconnect
     const msg = String(err.message || "").toLowerCase();
     if (msg.includes("session") || msg.includes("invalid") || msg.includes("login")) {
       await upsertBrokerConnection({
@@ -255,7 +214,6 @@ export function createShoonyaBroker() {
         err.status = 400;
         throw err;
       }
-      // Live Shoonya is India-only
       if (!String(input.symbol).match(/\.NS$|\.BO$|\.BSE$/i) && input.currency === "USD") {
         const err = new Error("Shoonya only supports Indian exchange symbols (.NS / .BO)");
         err.status = 400;
@@ -271,7 +229,7 @@ export function createShoonyaBroker() {
 
       const orderType = String(input.orderType || "market").toLowerCase();
       const isMarket = orderType === "market";
-      const product = String(input.product || "C").toUpperCase(); // C = CNC delivery
+      const product = String(input.product || "C").toUpperCase();
 
       const orderId = crypto.randomUUID();
       const now = Date.now();
@@ -305,8 +263,6 @@ export function createShoonyaBroker() {
         brokerOrderId = resp.norenordno || null;
         status = brokerOrderId ? "submitted" : "rejected";
         if (!brokerOrderId) errorMsg = resp.emsg || "No order id returned";
-
-        // Best-effort fill price from client quote for display (broker is source of truth)
         fillPrice = Number(input.clientPrice) || null;
       } catch (err) {
         status = "rejected";
@@ -365,7 +321,6 @@ export function createShoonyaBroker() {
               brokerOrderId,
             }
           : null,
-        // Live: do not mutate paper portfolio
         portfolio: null,
         note: "Order sent to Shoonya. Positions sync from your brokerage account.",
       };

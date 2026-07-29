@@ -26,7 +26,7 @@ import {
   getBrokerConnection,
 } from "./lib/store.js";
 import { createExecutionRouter, EXECUTION_MODE, VENUES } from "./brokers/router.js";
-import { shoonyaLogin, shoonyaLogout } from "./brokers/shoonya.js";
+import { shoonyaLogin, shoonyaLogout, shoonyaAuthorizeUrl } from "./brokers/shoonya.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -2409,6 +2409,17 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (pathname === "/api/broker/shoonya/authorize-url" && req.method === "GET") {
+      const user = await getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      const userid = String(url.searchParams.get("userid") || "").trim();
+      if (!userid) return sendJson(res, 400, { error: "userid is required" });
+      return sendJson(res, 200, {
+        url: shoonyaAuthorizeUrl(userid),
+        hint: "Open this link, log into Shoonya, then copy the code= value from the final URL back into Pulse.",
+      });
+    }
+
     if (pathname === "/api/broker/shoonya/connect" && req.method === "POST") {
       const user = await getSessionUser(req);
       if (!user) return sendJson(res, 401, { error: "Not signed in" });
@@ -2416,22 +2427,21 @@ const server = http.createServer(async (req, res) => {
       try {
         const tokens = await shoonyaLogin({
           userid: body.userid || body.userId,
-          password: body.password,
-          twoFA: body.twoFA || body.totp || body.otp,
-          apiSecret: body.apiSecret || body.api_secret,
-          vendorCode: body.vendorCode || body.vc,
-          imei: body.imei,
+          apiSecret: body.apiSecret || body.api_secret || body.secret,
+          authCode: body.authCode || body.code || body.oauthCode,
+          clientId: body.clientId || body.client_id,
         });
         await upsertBrokerConnection({
           userSub: user.sub,
           provider: VENUES.SHOONYA,
           status: "connected",
           tokens,
-          expiresAt: Date.now() + 20 * 60 * 60 * 1000, // ~session day
+          expiresAt: Date.now() + 20 * 60 * 60 * 1000,
           meta: {
             uid: tokens.uid,
             actid: tokens.actid,
             uname: tokens.uname,
+            authMethod: "oauth",
             connectedAt: Date.now(),
           },
         });

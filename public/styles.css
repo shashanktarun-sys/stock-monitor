@@ -2921,6 +2921,20 @@ body {
 .broker-status.connected {
   color: var(--green, #34d399);
 }
+.broker-steps {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.broker-steps a { color: var(--accent, #3b82f6); }
+.broker-steps code {
+  font-size: 0.78rem;
+  background: var(--panel-2, #111);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
 .trade-venue-row {
   display: flex;
   gap: 14px;

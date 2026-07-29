@@ -4,33 +4,41 @@ Pulse keeps **paper trading** as the default execution path.
 Live brokerage firms plug in by implementing the same adapter surface used by
 [`brokers/paper.js`](../brokers/paper.js) and routing through [`brokers/router.js`](../brokers/router.js).
 
-## Live: Shoonya (Finvasia) — enabled
+## Live: Shoonya (Finvasia) — enabled (OAuth)
 
-India equity live orders are supported via [`brokers/shoonya.js`](../brokers/shoonya.js).
+India equity live orders use [`brokers/shoonya.js`](../brokers/shoonya.js).
+
+**Important (Apr 2026+):** Shoonya retired retail **QuickAuth** (password + vendor + IMEI).
+Retail accounts must use **OAuth → GenAcsTok**.
 
 ### User flow
 
 1. Sign in to Pulse.
-2. Open **Profile → Broker — Shoonya**.
-3. Enter Shoonya **User ID**, **password**, **2FA/TOTP**, and **API secret**
-   (generate the secret in Shoonya API / Prism settings; enable API on the account).
-4. Vendor code defaults to `UserID_U` if left blank.
-5. On a stock detail card, choose **Live · Shoonya** (India symbols only), then Buy/Sell.
-6. Confirm the live-order dialog — the order is sent to your Shoonya account.
+2. On [trade.shoonya.com](https://trade.shoonya.com) → profile → **API Key**:
+   - Copy the **secret code**
+   - **Whitelist** the public IP of the machine that runs Pulse (local PC or Render outbound IP)
+3. Pulse Profile → **Broker — Shoonya**:
+   - Enter **User ID** (`FA…`) and **API secret**
+   - Click **Get auth code** → log in on Shoonya’s page
+   - Paste `code=…` (or the full redirect URL) → **Connect Shoonya**
+4. On an India stock detail card, choose **Live · Shoonya**, then Buy/Sell.
 
-Agents stay **paper-only**. Pilot can choose paper or Shoonya per trade.
+Agents stay **paper-only**.
 
 ### Server endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/broker/shoonya/connect` | QuickAuth login; store encrypted session |
-| POST | `/api/broker/shoonya/disconnect` | Logout + clear tokens |
+| GET | `/api/broker/shoonya/authorize-url?userid=` | OAuth authorize URL |
+| POST | `/api/broker/shoonya/connect` | `{ userid, apiSecret, authCode }` → GenAcsTok |
+| POST | `/api/broker/shoonya/disconnect` | Clear tokens |
 | GET | `/api/broker/shoonya/status` | Connected? |
-| GET | `/api/broker/connections` | List venues |
 | POST | `/api/orders` with `venue: "shoonya"` | Live place order |
 
-Set `BROKER_TOKEN_SECRET` (or `SESSION_SECRET`) so session tokens encrypt at rest.
+Checksum: `SHA256(clientId + secret + code)` where `clientId` is usually `UserID_U`.
+Token exchange must originate from a **whitelisted IP**.
+
+Set `BROKER_TOKEN_SECRET` so session tokens encrypt at rest.
 
 ### Symbol map
 
@@ -39,36 +47,16 @@ Set `BROKER_TOKEN_SECRET` (or `SESSION_SECRET`) so session tokens encrypt at res
 ## Interface
 
 ```js
-placeOrder({
-  userSub, symbol, side, qty,
-  orderType?, limitPrice?, clientPrice?, currency?, name?,
-  signal?, industryInfo?, opts?
-}) -> { orderId, venue, status, fill?, portfolio?, error? }
-
+placeOrder({ userSub, symbol, side, qty, ... }) -> { orderId, venue, status, fill?, ... }
 getPositions(userSub) -> Position[]
 getOrders(userSub) -> Order[]
-cancelOrder?(userSub, orderId)
 ```
 
 ## Rules for live adapters
 
-1. **Do not** call paper fill logic for real money.
-2. Place the order at the broker → store `broker_order_id` on `orders`.
-3. Poll or webhook until `filled` / `rejected` / `cancelled`.
-4. Treat the **broker** as source of truth for live positions; sync into Pulse for display.
-5. Map Pulse symbols (e.g. `RELIANCE.NS`) to broker symbols inside the adapter.
-6. Store OAuth/API tokens only in `broker_connections.encrypted_tokens` (encrypt at rest).
-
-## Schema
-
-- `orders` — venue `paper|shoonya|alpaca|zerodha`, status, fill fields
-- `broker_connections` — per-user provider link (status `paper_only` | `connected` | `disconnected`)
-
-## Adding another broker later
-
-1. Implement `brokers/<name>.js`.
-2. Register it in `createExecutionRouter`.
-3. Add connect UI that writes `broker_connections`.
-4. Keep paper as fallback; require explicit venue on live orders.
+1. Do not call paper fill logic for real money.
+2. Store `broker_order_id` on `orders`.
+3. Broker is source of truth for live positions.
+4. Encrypt tokens in `broker_connections.encrypted_tokens`.
 
 Pulse remains a client/router — KYC and custody stay with the brokerage.
