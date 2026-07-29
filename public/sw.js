@@ -1,6 +1,6 @@
-// Pulse service worker — caches the app shell for offline/quick loads.
+// Pulse service worker ? caches the app shell for offline/quick loads.
 // Note: service workers only register on secure contexts (https or localhost).
-const CACHE = "pulse-v39";
+const CACHE = "pulse-v40";
 const SHELL = [
   "/",
   "/index.html",

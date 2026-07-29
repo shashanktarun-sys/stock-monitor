@@ -984,21 +984,13 @@ function normalCdf(x) {
 }
 
 function estimateQuoteDistribution(q) {
-  const candles = q?.candles || [];
-  if (!candles || candles.length < 12) return null;
-  const closes = candles.map((c) => Number(c.close)).filter((x) => x > 0);
-  if (closes.length < 12) return null;
-  const returns = [];
-  for (let i = 1; i < closes.length; i++) {
-    returns.push(Math.log(closes[i] / closes[i - 1]));
-  }
-  if (returns.length < 10) return null;
-  const mean = returns.reduce((s, x) => s + x, 0) / returns.length;
-  const variance =
-    returns.reduce((s, x) => s + (x - mean) ** 2, 0) / Math.max(1, returns.length - 1);
-  const stdev = Math.sqrt(Math.max(variance, 1e-8));
-  const scoreAdj = ((q.analysis?.score || 0) / 100) * 0.0012;
-  const reco = q.analysis?.recommendation || "";
+  // Fallback sigma by cap bucket when candle history isn't loaded yet
+  const fallbackSigma =
+    q?.capBucket === "small" ? 0.022 : q?.capBucket === "large" ? 0.013 : 0.017;
+  const fallbackMu = 0.0003; // slight positive drift assumption
+
+  const scoreAdj = ((q?.analysis?.score || 0) / 100) * 0.0012;
+  const reco = q?.analysis?.recommendation || "";
   const recoAdj =
     reco === "STRONG BUY"
       ? 0.0008
@@ -1010,14 +1002,48 @@ function estimateQuoteDistribution(q) {
             ? -0.0008
             : 0;
   const capAdj =
-    q.capBucket === "large"
+    q?.capBucket === "large"
       ? -0.00005
-      : q.capBucket === "small"
+      : q?.capBucket === "small"
         ? 0.0001
         : 0;
+
+  const candles = q?.candles || [];
+  if (candles.length < 12) {
+    // Use empirical fallback — still return a usable distribution
+    return {
+      muDaily: fallbackMu + scoreAdj + recoAdj + capAdj,
+      sigmaDaily: fallbackSigma,
+      fallback: true,
+    };
+  }
+  const closes = candles.map((c) => Number(c.close)).filter((x) => x > 0);
+  if (closes.length < 12) {
+    return {
+      muDaily: fallbackMu + scoreAdj + recoAdj + capAdj,
+      sigmaDaily: fallbackSigma,
+      fallback: true,
+    };
+  }
+  const returns = [];
+  for (let i = 1; i < closes.length; i++) {
+    returns.push(Math.log(closes[i] / closes[i - 1]));
+  }
+  if (returns.length < 10) {
+    return {
+      muDaily: fallbackMu + scoreAdj + recoAdj + capAdj,
+      sigmaDaily: fallbackSigma,
+      fallback: true,
+    };
+  }
+  const mean = returns.reduce((s, x) => s + x, 0) / returns.length;
+  const variance =
+    returns.reduce((s, x) => s + (x - mean) ** 2, 0) / Math.max(1, returns.length - 1);
+  const stdev = Math.sqrt(Math.max(variance, 1e-8));
   return {
     muDaily: mean + scoreAdj + recoAdj + capAdj,
     sigmaDaily: stdev,
+    fallback: false,
   };
 }
 
@@ -1049,21 +1075,18 @@ function estimateAgentGoal(agent, preloadedQuotes = null) {
       .slice(0, Math.max(2, agent.maxPositions));
   }
 
-  const dists = candidates.map(estimateQuoteDistribution).filter(Boolean);
+  // Always produce distributions (estimateQuoteDistribution uses fallback when candles absent)
+  // If no candidates at all, use generic market params
+  let dists = candidates.map(estimateQuoteDistribution).filter(Boolean);
   if (!dists.length) {
-    return {
-      probabilityPct: null,
-      suggestedProfit: Math.max(0, Math.round(agent.corpus * 0.01)),
-      confidence: "low",
-      note: "Need more recent quote history to model this goal.",
-    };
+    // Generic market fallback — assume mixed large/mid cap portfolio
+    dists = [{ muDaily: 0.0003, sigmaDaily: 0.016, fallback: true }];
   }
 
   const w = 1 / dists.length;
   const muDaily = dists.reduce((s, d) => s + d.muDaily * w, 0) + stressPenalty;
-  const sigmaDaily = Math.sqrt(
-    dists.reduce((s, d) => s + (d.sigmaDaily * w) ** 2, 0)
-  );
+  // Average sigma (not RMS of weighted) — portfolio diversification reduces vol slightly
+  const sigmaDaily = dists.reduce((s, d) => s + d.sigmaDaily * w, 0) / Math.sqrt(Math.max(1, dists.length * 0.6));
   const meanH = muDaily * daysLeft;
   const sigmaH = Math.max(0.0001, sigmaDaily * Math.sqrt(daysLeft));
   const targetRet = agent.targetProfit / Math.max(1, agent.corpus);
@@ -1078,9 +1101,14 @@ function estimateAgentGoal(agent, preloadedQuotes = null) {
   const suggestedProfit = Math.round(agent.corpus * suggestedRet);
   const stretchProfit = Math.round(agent.corpus * stretchRet);
 
+  const allFallback = dists.every((d) => d.fallback);
   const confidence =
-    dists.length >= Math.max(2, Math.min(agent.maxPositions, 4)) ? "medium" : "low";
-  let note = `${daysLeft}d modeled horizon · based on recent volatility and Pulse trend.`;
+    !allFallback && dists.length >= Math.max(2, Math.min(agent.maxPositions, 4))
+      ? "medium"
+      : "low";
+  let note = allFallback
+    ? `${daysLeft}d estimate · using typical market volatility (load quotes for higher accuracy).`
+    : `${daysLeft}d modeled horizon · based on recent volatility and Pulse trend.`;
   if (stress.level === "crash" || stress.level === "risk_off") {
     note += ` ${stress.label.toLowerCase()} lowers odds.`;
   }
@@ -1432,7 +1460,7 @@ function renderAgents() {
           <div><span class="label">P&amp;L</span><b class="${pnl >= 0 ? "up" : "down"}">${money(pnl, cur)}</b></div>
           <div><span class="label">Target</span><b>${money(a.targetProfit, cur)}</b></div>
           <div><span class="label">Horizon</span><b>${leftLabel}</b></div>
-          <div><span class="label">Goal odds</span><b>${goalModel.probabilityPct == null ? "Estimating…" : `${goalModel.probabilityPct}%`}</b></div>
+          <div><span class="label">Goal odds</span><b>${goalModel.probabilityPct == null ? "—" : `${goalModel.probabilityPct}%`}</b></div>
           <div><span class="label">Likely target</span><b>${money(goalModel.suggestedProfit || 0, cur)}</b></div>
         </div>
         <div class="agent-progress" title="Progress to profit target">
