@@ -251,10 +251,19 @@ function countryRank(item, country) {
   }
   if (country === "US") {
     // US listings on Yahoo have no ".EXCHANGE" suffix
+    if (sym.endsWith(".NS") || sym.endsWith(".BO")) return 1;
+    if (exch.includes("NSE") || exch.includes("BSE") || exch === "NSI") return 1;
+    // Foreign Yahoo suffixes (.L, .T, .HK, .TO, …)
+    if (/^[A-Z0-9-]+\.[A-Z]{1,4}$/.test(sym)) return 1;
     if (!sym.includes(".")) return 0;
     return 1;
   }
   return 0;
+}
+
+function matchesCountry(item, country) {
+  if (!country || (country !== "US" && country !== "IN")) return true;
+  return countryRank(item, country) === 0;
 }
 
 // Lightweight daily change for a symbol (small payload) for the movers board.
@@ -304,19 +313,28 @@ async function getDailyChange(symbol) {
 async function searchLive(query, country) {
   const q = `/v1/finance/search?q=${encodeURIComponent(
     query
-  )}&quotesCount=12&newsCount=0`;
+  )}&quotesCount=24&newsCount=0`;
   const data = await yahooFetch(q);
-  const items = (data?.quotes || [])
+  let items = (data?.quotes || [])
     .filter((it) => it.symbol && (it.shortname || it.longname))
     .map((it) => ({
       symbol: it.symbol,
       name: it.shortname || it.longname,
       exchange: it.exchDisp || it.exchange || "",
       type: it.quoteType || "",
+      country:
+        countryRank(
+          {
+            symbol: it.symbol,
+            exchange: it.exchDisp || it.exchange || "",
+          },
+          "IN"
+        ) === 0
+          ? "IN"
+          : "US",
     }));
-  if (country) {
-    // stable sort: preferred country's exchanges first
-    items.sort((a, b) => countryRank(a, country) - countryRank(b, country));
+  if (country === "US" || country === "IN") {
+    items = items.filter((it) => matchesCountry(it, country));
   }
   return items.slice(0, 8);
 }
@@ -464,27 +482,35 @@ function getUniverse(country) {
 
 function searchSimulated(query, country) {
   const q = query.toLowerCase();
+  const key = country === "IN" || country === "US" ? country : "";
   let pool = SIM_UNIVERSE;
-  if (country) pool = SIM_UNIVERSE.filter((it) => it.country === country);
-  let matches = pool.filter(
+  if (key) pool = SIM_UNIVERSE.filter((it) => it.country === key);
+  const matches = pool.filter(
     (it) =>
       it.symbol.toLowerCase().includes(q) || it.name.toLowerCase().includes(q)
   );
-  // fall back to the full universe if a country filter hid everything
-  if (!matches.length && country) {
-    matches = SIM_UNIVERSE.filter(
-      (it) =>
-        it.symbol.toLowerCase().includes(q) || it.name.toLowerCase().includes(q)
-    );
+  if (matches.length) return matches.slice(0, 8);
+
+  // Allow typing a raw ticker for the selected market only (demo mode).
+  const raw = query.toUpperCase().trim();
+  if (!raw) return [];
+  let symbol = raw;
+  if (key === "IN" && !symbol.includes(".") && !symbol.startsWith("^")) {
+    symbol = symbol + ".NS";
   }
-  if (matches.length) return matches;
-  // allow arbitrary symbols so the user can still add anything in demo mode
+  if (key === "US" && (symbol.endsWith(".NS") || symbol.endsWith(".BO"))) {
+    return [];
+  }
+  if (key === "IN" && !symbol.endsWith(".NS") && !symbol.endsWith(".BO") && !symbol.startsWith("^")) {
+    return [];
+  }
   return [
     {
-      symbol: query.toUpperCase(),
-      name: `${query.toUpperCase()} (Simulated)`,
-      exchange: "SIM",
+      symbol,
+      name: `${symbol} (Simulated)`,
+      exchange: key === "IN" ? "NSE (sim)" : "SIM",
       type: "EQUITY",
+      country: key || "US",
     },
   ];
 }
@@ -2429,9 +2455,9 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/search") {
       const query = (url.searchParams.get("q") || "").trim();
-      const country = url.searchParams.get("country") || "";
+      const country = (url.searchParams.get("country") || "US").toUpperCase();
       if (!query) return sendJson(res, 200, []);
-      return sendJson(res, 200, await search(query, country));
+      return sendJson(res, 200, await search(query, country === "IN" ? "IN" : "US"));
     }
 
     if (pathname === "/api/movers") {

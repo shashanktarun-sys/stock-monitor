@@ -27,22 +27,55 @@
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">
-        <span class="logo">📈</span>
-        <div>
-          <h1>Pulse</h1>
-          <p>Real-time monitor &amp; short-term signals</p>
+      <div class="topbar-row">
+        <div class="brand">
+          <span class="logo">📈</span>
+          <div>
+            <h1>Pulse</h1>
+            <p>Real-time monitor &amp; short-term signals</p>
+          </div>
         </div>
+        <div class="controls">
+          <label class="refresh country">
+            Market
+            <select id="country">
+              <option value="US">🇺🇸 United States</option>
+              <option value="IN">🇮🇳 India</option>
+            </select>
+          </label>
+          <span id="marketHours" class="market-hours" title="Regular market session status">—</span>
+        </div>
+        <nav class="topnav" aria-label="Main">
+          <button id="navMarket" class="nav-btn" title="Go to market watchlist and analysis">
+            📊 Market
+          </button>
+          <button id="navPortfolio" class="nav-btn" title="Go to your paper portfolio">
+            💼 Portfolio
+            <span id="navPnl" class="nav-pnl"></span>
+          </button>
+          <button id="navBasket" class="nav-btn" title="Diversified multi-stock basket recommendations">
+            🧺 Basket
+          </button>
+          <button id="navAnalyze" class="nav-btn" title="Analyze portfolio and suggest buy/sell changes">
+            🔎 Analyze
+          </button>
+          <button id="navNews" class="nav-btn" title="World news impact analyzer">
+            📰 News
+          </button>
+          <button id="enableAlertsBtn" class="nav-btn" title="Enable browser alerts for signal reversals">
+            🔔 Enable alerts
+          </button>
+          <button id="signInNav" class="nav-btn hidden">Sign in</button>
+          <div id="userChip" class="user-chip hidden">
+            <button id="profileBtn" class="user-chip-btn" title="Open your profile">
+              <img id="userAvatar" class="user-avatar" alt="" referrerpolicy="no-referrer" />
+              <span id="userName" class="user-name"></span>
+            </button>
+            <button id="signOutBtn" class="mini-btn">Sign out</button>
+          </div>
+        </nav>
       </div>
-      <div class="controls">
-        <label class="refresh country">
-          Market
-          <select id="country">
-            <option value="US">🇺🇸 United States</option>
-            <option value="IN">🇮🇳 India</option>
-          </select>
-        </label>
-        <span id="marketHours" class="market-hours" title="Regular market session status">—</span>
+      <div class="search-bar">
         <div class="search-wrap">
           <input
             id="search"
@@ -52,40 +85,20 @@
           />
           <div id="suggestions" class="suggestions"></div>
         </div>
-        <label class="refresh">
-          Refresh
-          <select id="interval">
-            <option value="10000">10s</option>
-            <option value="30000" selected>30s</option>
-            <option value="60000">1m</option>
-            <option value="0">Off</option>
-          </select>
-        </label>
-        <span id="status" class="status">—</span>
-      </div>
-      <nav class="topnav" aria-label="Account">
-        <button id="navMarket" class="nav-btn" title="Go to market watchlist and analysis">
-          📊 Market
-        </button>
-        <button id="navPortfolio" class="nav-btn" title="Go to your paper portfolio">
-          💼 Portfolio
-          <span id="navPnl" class="nav-pnl"></span>
-        </button>
-        <button id="navNews" class="nav-btn" title="World news impact analyzer">
-          📰 News
-        </button>
-        <button id="enableAlertsBtn" class="nav-btn hidden" title="Enable browser alerts for signal reversals">
-          🔔 Enable alerts
-        </button>
-        <button id="signInNav" class="nav-btn hidden">Sign in</button>
-        <div id="userChip" class="user-chip hidden">
-          <button id="profileBtn" class="user-chip-btn" title="Open your profile">
-            <img id="userAvatar" class="user-avatar" alt="" referrerpolicy="no-referrer" />
-            <span id="userName" class="user-name"></span>
-          </button>
-          <button id="signOutBtn" class="mini-btn">Sign out</button>
+        <div class="search-refresh">
+          <label class="refresh">
+            Refresh
+            <select id="interval">
+              <option value="10000">10s</option>
+              <option value="30000" selected>30s</option>
+              <option value="60000">1m</option>
+              <option value="0">Off</option>
+            </select>
+          </label>
+          <button id="refreshAll" class="nav-btn search-refresh-btn" title="Refresh now">↻ Refresh</button>
+          <span id="status" class="status">—</span>
         </div>
-      </nav>
+      </div>
     </header>
 
     <section class="app-page" id="marketPage">
@@ -135,7 +148,6 @@
               <button id="tabWatchlist" class="seg-btn on" data-view="watchlist">Watchlist</button>
               <button id="tabAllStocks" class="seg-btn" data-view="all">All Stocks</button>
             </div>
-            <button id="refreshAll" class="ghost-btn" title="Refresh now">↻</button>
           </div>
           <div class="wl-filter">
             <label>
@@ -188,9 +200,14 @@
     <section class="portfolio-panel" id="portfolioPanel">
       <div class="panel-head">
         <h2>Paper Portfolio <span id="portfolioTraderType" class="trader-class-badge compact hidden"></span></h2>
-        <button id="portfolioReset" class="ghost-btn small" title="Clear all holdings and history">
-          Reset
-        </button>
+        <div class="panel-head-actions">
+          <button type="button" class="mini-btn primary" id="portfolioAnalyzeBtn" title="Analyze holdings and suggest changes">
+            Analyze portfolio
+          </button>
+          <button id="portfolioReset" class="ghost-btn small" title="Clear all holdings and history">
+            Reset
+          </button>
+        </div>
       </div>
       <div class="pnl-period-bar" id="pnlPeriodBar">
         <span class="pnl-period-label">P&amp;L period</span>
@@ -203,6 +220,14 @@
           <button type="button" class="pnl-period-btn active" data-period="all">All</button>
           <button type="button" class="pnl-period-btn" data-period="custom">Custom</button>
         </div>
+        <label class="pnl-country-filter">
+          Country
+          <select id="portfolioCountry">
+            <option value="ALL">All</option>
+            <option value="US">United States</option>
+            <option value="IN">India</option>
+          </select>
+        </label>
         <div class="pnl-custom-range hidden" id="pnlCustomRange">
           <label>From <input type="date" id="pnlFrom" /></label>
           <label>To <input type="date" id="pnlTo" /></label>
@@ -217,6 +242,135 @@
       </details>
       <p class="pf-note">Paper trading only — virtual money, no real orders are placed.</p>
     </section>
+    </section>
+
+    <section class="app-page hidden" id="basketPage">
+      <section class="portfolio-panel diversify-page" id="diversifyPanel">
+        <div class="panel-head">
+          <h2>Diversify basket</h2>
+          <button type="button" class="mini-btn primary" id="diversifyGenerate">Suggest basket</button>
+        </div>
+        <p class="diversify-sub">
+          Pulse picks multiple BUY ideas, spreads them across sectors &amp; caps, and sizes quantities for your budget.
+          Buys from here are tagged as <b>Basket buy</b> in your portfolio and trade history.
+        </p>
+        <div class="diversify-controls">
+          <label>
+            Budget
+            <input type="number" id="diversifyBudget" min="1" step="1" value="5000" />
+          </label>
+          <label>
+            Stocks
+            <input type="number" id="diversifyCount" min="2" max="12" step="1" value="5" />
+          </label>
+          <label>
+            Market
+            <select id="diversifyCountry">
+              <option value="US">United States</option>
+              <option value="IN">India</option>
+            </select>
+          </label>
+          <label class="diversify-check">
+            <input type="checkbox" id="diversifyExcludeHeld" checked />
+            Skip names I already hold
+          </label>
+        </div>
+        <div id="diversifyMeta" class="diversify-meta"></div>
+        <div id="diversifyCharts" class="diversify-charts hidden">
+          <div class="diversify-chart-card">
+            <h4>By industry</h4>
+            <div class="diversify-chart-body">
+              <canvas id="diversifyIndustryChart" width="180" height="180" aria-label="Industry allocation pie chart"></canvas>
+              <div id="diversifyIndustryLegend" class="diversify-chart-legend"></div>
+            </div>
+          </div>
+          <div class="diversify-chart-card">
+            <h4>By company cap</h4>
+            <div class="diversify-chart-body">
+              <canvas id="diversifyCapChart" width="180" height="180" aria-label="Market cap allocation pie chart"></canvas>
+              <div id="diversifyCapLegend" class="diversify-chart-legend"></div>
+            </div>
+          </div>
+        </div>
+        <div id="diversifyResults" class="diversify-results"></div>
+        <div class="diversify-actions hidden" id="diversifyActions">
+          <button type="button" class="mini-btn primary" id="diversifyBuyAll">Buy all suggested</button>
+          <button type="button" class="ghost-btn small" id="diversifyClear">Clear</button>
+        </div>
+        <p class="pf-note">Paper trading only — virtual money, no real orders are placed. Not financial advice.</p>
+      </section>
+    </section>
+
+    <section class="app-page hidden" id="analyzePage">
+      <section class="portfolio-panel analyze-page" id="analyzePanel">
+        <div class="panel-head">
+          <h2>Portfolio analyzer</h2>
+          <button type="button" class="mini-btn primary" id="analyzeRun">Analyze now</button>
+        </div>
+        <p class="diversify-sub">
+          Pulse reviews your holdings for take-profit / cut-loss / add ideas, then suggests new stocks to improve diversification and upside.
+          Educational only — not financial advice.
+        </p>
+        <div class="diversify-controls">
+          <label>
+            Market
+            <select id="analyzeCountry">
+              <option value="ALL">All holdings</option>
+              <option value="US">United States</option>
+              <option value="IN">India</option>
+            </select>
+          </label>
+          <label>
+            Add budget
+            <input type="number" id="analyzeBudget" min="1" step="1" value="3000" />
+          </label>
+        </div>
+        <div id="analyzeSummary" class="analyze-summary"></div>
+        <div id="analyzeMeta" class="diversify-meta"></div>
+        <div id="analyzeCharts" class="analyze-charts-wrap hidden">
+          <div class="analyze-charts-block">
+            <h3>Current portfolio</h3>
+            <div class="diversify-charts">
+              <div class="diversify-chart-card">
+                <h4>By industry</h4>
+                <div class="diversify-chart-body">
+                  <canvas id="analyzeNowIndustryChart" width="180" height="180" aria-label="Current industry allocation"></canvas>
+                  <div id="analyzeNowIndustryLegend" class="diversify-chart-legend"></div>
+                </div>
+              </div>
+              <div class="diversify-chart-card">
+                <h4>By company cap</h4>
+                <div class="diversify-chart-body">
+                  <canvas id="analyzeNowCapChart" width="180" height="180" aria-label="Current market-cap allocation"></canvas>
+                  <div id="analyzeNowCapLegend" class="diversify-chart-legend"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="analyze-charts-block">
+            <h3>After suggestions</h3>
+            <p class="analyze-charts-note">Projected mix if you apply the sell / trim / buy ideas below.</p>
+            <div class="diversify-charts">
+              <div class="diversify-chart-card">
+                <h4>By industry</h4>
+                <div class="diversify-chart-body">
+                  <canvas id="analyzeNewIndustryChart" width="180" height="180" aria-label="Projected industry allocation"></canvas>
+                  <div id="analyzeNewIndustryLegend" class="diversify-chart-legend"></div>
+                </div>
+              </div>
+              <div class="diversify-chart-card">
+                <h4>By company cap</h4>
+                <div class="diversify-chart-body">
+                  <canvas id="analyzeNewCapChart" width="180" height="180" aria-label="Projected market-cap allocation"></canvas>
+                  <div id="analyzeNewCapLegend" class="diversify-chart-legend"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="analyzeResults" class="analyze-results"></div>
+        <p class="pf-note">Paper trading only — virtual money, no real orders are placed.</p>
+      </section>
     </section>
 
     <section class="app-page hidden" id="newsPage">
@@ -253,6 +407,25 @@
       indicators and are <strong>not financial advice</strong>. Markets are
       risky — do your own research.
     </footer>
+
+    <div id="alertsHelpOverlay" class="login-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="alertsHelpTitle">
+      <div class="login-card alerts-help-card">
+        <h2 id="alertsHelpTitle">Turn on Pulse alerts</h2>
+        <p class="login-sub" id="alertsHelpBody">
+          Browser notifications are blocked for this site, so opposite-signal alerts cannot pop up.
+        </p>
+        <ol class="alerts-help-steps" id="alertsHelpSteps">
+          <li>Click the lock / tune icon in the address bar</li>
+          <li>Find <b>Notifications</b> and set it to <b>Allow</b></li>
+          <li>Reload this page, then click <b>Check again</b></li>
+        </ol>
+        <p class="alerts-help-note" id="alertsHelpNote"></p>
+        <div class="alerts-help-actions">
+          <button type="button" class="auth-btn primary" id="alertsHelpRetry">Check again</button>
+          <button type="button" class="auth-btn" id="alertsHelpClose">Close</button>
+        </div>
+      </div>
+    </div>
 
     <div id="loginOverlay" class="login-overlay hidden">
       <div class="login-card">

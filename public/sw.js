@@ -1,6 +1,6 @@
 // Pulse service worker — caches the app shell for offline/quick loads.
 // Note: service workers only register on secure contexts (https or localhost).
-const CACHE = "pulse-v16";
+const CACHE = "pulse-v30";
 const SHELL = [
   "/",
   "/index.html",
@@ -78,5 +78,25 @@ self.addEventListener("fetch", (event) => {
           })
           .catch(() => caches.match("/"))
     )
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ("focus" in client) {
+          client.focus();
+          if (client.url && "navigate" in client) {
+            try {
+              client.navigate(client.url.includes("#") ? client.url : `${client.url}#portfolio`);
+            } catch {}
+          }
+          return;
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow("/#portfolio");
+    })
   );
 });

@@ -32,6 +32,7 @@ const state = {
   chart: loadChartConfig(),
   portfolio: loadPortfolio(),
   pnlPeriod: loadPnlPeriod(),
+  portfolioCountry: loadPortfolioCountry(),
   signalAlerts: loadSignalAlerts(),
 };
 state.watchlist = loadWatchlist(state.country);
@@ -67,7 +68,7 @@ function saveSignalAlerts() {
   localStorage.setItem(storageKey("signalAlerts"), JSON.stringify(state.signalAlerts));
 }
 
-function buyStock(symbol, qty, price, currency, name, signal, industryInfo) {
+function buyStock(symbol, qty, price, currency, name, signal, industryInfo, opts) {
   qty = Math.floor(qty);
   if (!(qty > 0) || !(price > 0)) return;
   const p = state.portfolio;
@@ -87,6 +88,10 @@ function buyStock(symbol, qty, price, currency, name, signal, industryInfo) {
     if (industryInfo.sector) pos.sector = industryInfo.sector;
     if (industryInfo.capLabel) pos.capLabel = industryInfo.capLabel;
   }
+  if (opts?.source === "basket") {
+    pos.fromBasket = true;
+    pos.basketId = opts.basketId || pos.basketId || null;
+  }
   p.positions[symbol] = pos;
   p.trades.unshift({
     symbol,
@@ -100,6 +105,8 @@ function buyStock(symbol, qty, price, currency, name, signal, industryInfo) {
     industry: industryInfo?.industry || pos.industry || null,
     sector: industryInfo?.sector || pos.sector || null,
     capLabel: industryInfo?.capLabel || pos.capLabel || null,
+    source: opts?.source || null,
+    basketId: opts?.basketId || null,
   });
   delete state.signalAlerts[symbol];
   savePortfolio();
@@ -153,6 +160,47 @@ function loadPnlPeriod() {
 
 function savePnlPeriod() {
   localStorage.setItem(storageKey("pnlPeriod"), JSON.stringify(state.pnlPeriod));
+}
+
+function loadPortfolioCountry() {
+  try {
+    const saved = localStorage.getItem(storageKey("portfolioCountry"));
+    if (saved === "US" || saved === "IN" || saved === "ALL") return saved;
+  } catch {}
+  return "ALL";
+}
+
+function savePortfolioCountry() {
+  localStorage.setItem(storageKey("portfolioCountry"), state.portfolioCountry);
+}
+
+/** Map a holding/trade to US or IN. */
+function assetCountry(symbol, currency) {
+  const sym = String(symbol || "").toUpperCase();
+  if (sym.endsWith(".NS") || sym.endsWith(".BO")) return "IN";
+  if (currency === "INR") return "IN";
+  // Other Yahoo exchange suffixes are neither US nor IN for our Market toggle.
+  if (/^[A-Z0-9-]+\.[A-Z]{1,4}$/.test(sym)) return "OTHER";
+  if (currency === "USD") return "US";
+  return "US";
+}
+
+function matchesMarket(symbol, currency, country = state.country) {
+  return assetCountry(symbol, currency) === country;
+}
+
+function countryLabel(code) {
+  if (code === "US") return "United States";
+  if (code === "IN") return "India";
+  return "All countries";
+}
+
+/** Keep only symbols that belong to the active Market country. */
+function filterByMarket(symbols) {
+  return (symbols || []).filter((sym) => {
+    const q = state.quotes[sym];
+    return matchesMarket(sym, q?.currency);
+  });
 }
 
 /** Start-of-local-day ms for a Date. */
@@ -251,6 +299,7 @@ function syncPnlPeriodUI() {
   const toEl = document.getElementById("pnlTo");
   if (fromEl && state.pnlPeriod.from) fromEl.value = state.pnlPeriod.from;
   if (toEl && state.pnlPeriod.to) toEl.value = state.pnlPeriod.to;
+  if (el.portfolioCountry) el.portfolioCountry.value = state.portfolioCountry || "ALL";
 }
 
 function loadChartConfig() {
@@ -473,6 +522,7 @@ async function syncOnLogin() {
     state.chart = loadChartConfig();
     state.portfolio = loadPortfolio();
     state.pnlPeriod = loadPnlPeriod();
+    state.portfolioCountry = loadPortfolioCountry();
     await pushServerData();
   }
 }
@@ -486,6 +536,8 @@ const el = {
   suggestions: document.getElementById("suggestions"),
   marketPage: document.getElementById("marketPage"),
   portfolioPage: document.getElementById("portfolioPage"),
+  basketPage: document.getElementById("basketPage"),
+  analyzePage: document.getElementById("analyzePage"),
   newsPage: document.getElementById("newsPage"),
   country: document.getElementById("country"),
   marketHours: document.getElementById("marketHours"),
@@ -523,8 +575,44 @@ const el = {
   pnlFrom: document.getElementById("pnlFrom"),
   pnlTo: document.getElementById("pnlTo"),
   pnlCustomApply: document.getElementById("pnlCustomApply"),
+  portfolioCountry: document.getElementById("portfolioCountry"),
+  diversifyPanel: document.getElementById("diversifyPanel"),
+  diversifyGenerate: document.getElementById("diversifyGenerate"),
+  diversifyBudget: document.getElementById("diversifyBudget"),
+  diversifyCount: document.getElementById("diversifyCount"),
+  diversifyCountry: document.getElementById("diversifyCountry"),
+  diversifyExcludeHeld: document.getElementById("diversifyExcludeHeld"),
+  diversifyMeta: document.getElementById("diversifyMeta"),
+  diversifyCharts: document.getElementById("diversifyCharts"),
+  diversifyIndustryChart: document.getElementById("diversifyIndustryChart"),
+  diversifyIndustryLegend: document.getElementById("diversifyIndustryLegend"),
+  diversifyCapChart: document.getElementById("diversifyCapChart"),
+  diversifyCapLegend: document.getElementById("diversifyCapLegend"),
+  diversifyResults: document.getElementById("diversifyResults"),
+  diversifyActions: document.getElementById("diversifyActions"),
+  diversifyBuyAll: document.getElementById("diversifyBuyAll"),
+  diversifyClear: document.getElementById("diversifyClear"),
+  analyzePanel: document.getElementById("analyzePanel"),
+  analyzeRun: document.getElementById("analyzeRun"),
+  analyzeCountry: document.getElementById("analyzeCountry"),
+  analyzeBudget: document.getElementById("analyzeBudget"),
+  analyzeSummary: document.getElementById("analyzeSummary"),
+  analyzeMeta: document.getElementById("analyzeMeta"),
+  analyzeCharts: document.getElementById("analyzeCharts"),
+  analyzeNowIndustryChart: document.getElementById("analyzeNowIndustryChart"),
+  analyzeNowIndustryLegend: document.getElementById("analyzeNowIndustryLegend"),
+  analyzeNowCapChart: document.getElementById("analyzeNowCapChart"),
+  analyzeNowCapLegend: document.getElementById("analyzeNowCapLegend"),
+  analyzeNewIndustryChart: document.getElementById("analyzeNewIndustryChart"),
+  analyzeNewIndustryLegend: document.getElementById("analyzeNewIndustryLegend"),
+  analyzeNewCapChart: document.getElementById("analyzeNewCapChart"),
+  analyzeNewCapLegend: document.getElementById("analyzeNewCapLegend"),
+  analyzeResults: document.getElementById("analyzeResults"),
+  portfolioAnalyzeBtn: document.getElementById("portfolioAnalyzeBtn"),
   navMarket: document.getElementById("navMarket"),
   navPortfolio: document.getElementById("navPortfolio"),
+  navBasket: document.getElementById("navBasket"),
+  navAnalyze: document.getElementById("navAnalyze"),
   navNews: document.getElementById("navNews"),
   navPnl: document.getElementById("navPnl"),
   newsPanel: document.getElementById("newsPanel"),
@@ -535,6 +623,12 @@ const el = {
   newsStockBoard: document.getElementById("newsStockBoard"),
   newsFeed: document.getElementById("newsFeed"),
   enableAlertsBtn: document.getElementById("enableAlertsBtn"),
+  alertsHelpOverlay: document.getElementById("alertsHelpOverlay"),
+  alertsHelpBody: document.getElementById("alertsHelpBody"),
+  alertsHelpSteps: document.getElementById("alertsHelpSteps"),
+  alertsHelpNote: document.getElementById("alertsHelpNote"),
+  alertsHelpRetry: document.getElementById("alertsHelpRetry"),
+  alertsHelpClose: document.getElementById("alertsHelpClose"),
   signInNav: document.getElementById("signInNav"),
   userChip: document.getElementById("userChip"),
   userAvatar: document.getElementById("userAvatar"),
@@ -635,44 +729,201 @@ const el = {
 function getInitialPage() {
   const h = window.location.hash;
   if (h === "#portfolio") return "portfolio";
+  if (h === "#basket") return "basket";
+  if (h === "#analyze") return "analyze";
   if (h === "#news") return "news";
   return "market";
 }
 
 function setPage(page, pushHash = true) {
   if (page === "portfolio") state.page = "portfolio";
+  else if (page === "basket") state.page = "basket";
+  else if (page === "analyze") state.page = "analyze";
   else if (page === "news") state.page = "news";
   else state.page = "market";
   el.marketPage?.classList.toggle("hidden", state.page !== "market");
   el.portfolioPage?.classList.toggle("hidden", state.page !== "portfolio");
+  el.basketPage?.classList.toggle("hidden", state.page !== "basket");
+  el.analyzePage?.classList.toggle("hidden", state.page !== "analyze");
   el.newsPage?.classList.toggle("hidden", state.page !== "news");
   el.navMarket?.classList.toggle("active", state.page === "market");
   el.navPortfolio?.classList.toggle("active", state.page === "portfolio");
+  el.navBasket?.classList.toggle("active", state.page === "basket");
+  el.navAnalyze?.classList.toggle("active", state.page === "analyze");
   el.navNews?.classList.toggle("active", state.page === "news");
   if (pushHash) {
     const hash =
-      state.page === "portfolio" ? "#portfolio" : state.page === "news" ? "#news" : "#market";
+      state.page === "portfolio"
+        ? "#portfolio"
+        : state.page === "basket"
+          ? "#basket"
+          : state.page === "analyze"
+            ? "#analyze"
+            : state.page === "news"
+              ? "#news"
+              : "#market";
     if (window.location.hash !== hash) {
       window.history.replaceState(null, "", hash);
     }
   }
   if (state.page === "news") refreshNews();
+  if (state.page === "basket") syncDiversifyCountryUI();
+  if (state.page === "analyze") syncAnalyzeCountryUI();
+}
+
+function getNotificationPermission() {
+  if (!("Notification" in window)) return "unsupported";
+  if (!window.isSecureContext) return "insecure";
+  return Notification.permission; // "granted" | "denied" | "default"
 }
 
 function updateAlertsUI() {
   if (!el.enableAlertsBtn) return;
-  const supported = "Notification" in window;
-  const permission = supported ? Notification.permission : "denied";
-  el.enableAlertsBtn.classList.toggle("hidden", !supported || permission === "granted");
+  const permission = getNotificationPermission();
+  el.enableAlertsBtn.classList.remove("hidden", "alerts-on", "alerts-blocked");
+  el.enableAlertsBtn.disabled = false;
+
+  if (permission === "granted") {
+    el.enableAlertsBtn.textContent = "🔔 Alerts on";
+    el.enableAlertsBtn.classList.add("alerts-on");
+    el.enableAlertsBtn.title =
+      "Browser alerts are enabled. Click to send a test notification.";
+    return;
+  }
+
+  if (permission === "unsupported") {
+    el.enableAlertsBtn.textContent = "🔕 Alerts unavailable";
+    el.enableAlertsBtn.classList.add("alerts-blocked");
+    el.enableAlertsBtn.title =
+      "This browser does not support notifications. In-app toasts still work.";
+    return;
+  }
+
+  if (permission === "insecure") {
+    el.enableAlertsBtn.textContent = "🔕 Alerts need HTTPS";
+    el.enableAlertsBtn.classList.add("alerts-blocked");
+    el.enableAlertsBtn.title =
+      "Browser notifications require HTTPS or localhost. Open Pulse over a secure URL.";
+    return;
+  }
+
   if (permission === "denied") {
     el.enableAlertsBtn.textContent = "🔕 Alerts blocked";
-    el.enableAlertsBtn.disabled = true;
-    el.enableAlertsBtn.title = "Browser notifications are blocked for this site.";
-  } else {
-    el.enableAlertsBtn.textContent = "🔔 Enable alerts";
-    el.enableAlertsBtn.disabled = false;
-    el.enableAlertsBtn.title = "Enable browser alerts for opposite signal changes on held stocks.";
+    el.enableAlertsBtn.classList.add("alerts-blocked");
+    el.enableAlertsBtn.title =
+      "Notifications are blocked. Click for steps to allow them.";
+    return;
   }
+
+  el.enableAlertsBtn.textContent = "🔔 Enable alerts";
+  el.enableAlertsBtn.title =
+    "Enable browser alerts for opposite signal changes on held stocks.";
+}
+
+function openAlertsHelp(reason) {
+  if (!el.alertsHelpOverlay) return;
+  const body = el.alertsHelpBody;
+  const steps = el.alertsHelpSteps;
+  const note = el.alertsHelpNote;
+  const host = window.location.host || "this site";
+
+  if (reason === "unsupported") {
+    if (body)
+      body.textContent =
+        "This browser cannot show system notifications. Pulse will still show in-app toasts when a held stock flips signal.";
+    if (steps) steps.classList.add("hidden");
+  } else if (reason === "insecure") {
+    if (body)
+      body.innerHTML =
+        "Browser notifications only work on <b>HTTPS</b> or <b>localhost</b>. You are currently on an insecure page, so the browser blocks them.";
+    if (steps) {
+      steps.classList.remove("hidden");
+      steps.innerHTML = `
+        <li>Open Pulse using your <b>https://</b> URL (for example your Render link)</li>
+        <li>Or run locally at <b>http://localhost</b></li>
+        <li>Then click <b>Enable alerts</b> again</li>`;
+    }
+  } else {
+    if (body)
+      body.innerHTML =
+        `Notifications for <b>${escapeAttr(host)}</b> were blocked earlier. Browsers will not show the permission popup again until you allow them in site settings.`;
+    if (steps) {
+      steps.classList.remove("hidden");
+      steps.innerHTML = `
+        <li>Click the <b>lock</b> or <b>tune</b> icon in the address bar</li>
+        <li>Open <b>Site settings</b> / <b>Permissions</b></li>
+        <li>Set <b>Notifications</b> to <b>Allow</b></li>
+        <li>Reload the page, then click <b>Check again</b></li>`;
+    }
+  }
+  if (note) {
+    note.textContent =
+      "Tip: even while blocked, Pulse still shows an in-app toast when a held stock reverses against your buy-time signal.";
+  }
+  el.alertsHelpOverlay.classList.remove("hidden");
+}
+
+function closeAlertsHelp() {
+  el.alertsHelpOverlay?.classList.add("hidden");
+}
+
+async function enableOrFixAlerts() {
+  const permission = getNotificationPermission();
+
+  if (permission === "granted") {
+    const ok = await sendBrowserNotification(
+      "Pulse alerts are on",
+      "You will get a notification when a held stock flips against your buy-time signal.",
+      "pulse-alerts-test"
+    );
+    showTradeToast(
+      ok
+        ? "Test alert sent — check your notifications."
+        : "Could not show a test notification. Check OS notification settings."
+    );
+    return;
+  }
+
+  if (permission === "denied" || permission === "unsupported" || permission === "insecure") {
+    openAlertsHelp(permission);
+    return;
+  }
+
+  // permission === "default"
+  try {
+    const result = await Notification.requestPermission();
+    updateAlertsUI();
+    if (result === "granted") {
+      closeAlertsHelp();
+      await sendBrowserNotification(
+        "Pulse alerts are on",
+        "You will get a notification when a held stock flips against your buy-time signal.",
+        "pulse-alerts-test"
+      );
+      showTradeToast("Browser alerts enabled.");
+      maybeNotifySignalReversal();
+    } else if (result === "denied") {
+      openAlertsHelp("denied");
+    }
+  } catch {
+    openAlertsHelp("denied");
+  }
+}
+
+function watchNotificationPermission() {
+  try {
+    if (!navigator.permissions?.query) return;
+    navigator.permissions.query({ name: "notifications" }).then((status) => {
+      status.onchange = () => {
+        updateAlertsUI();
+        if (getNotificationPermission() === "granted") {
+          closeAlertsHelp();
+          showTradeToast("Browser alerts enabled.");
+          maybeNotifySignalReversal();
+        }
+      };
+    }).catch(() => {});
+  } catch {}
 }
 
 function isBullishSignal(sig) {
@@ -691,25 +942,32 @@ function signalIsOpposite(buySignal, currentSignal) {
 }
 
 async function sendBrowserNotification(title, body, tag) {
-  if (!("Notification" in window) || Notification.permission !== "granted") return false;
+  if (getNotificationPermission() !== "granted") return false;
   try {
     if ("serviceWorker" in navigator) {
-      const reg = await navigator.serviceWorker.getRegistration();
-      if (reg) {
+      const reg =
+        (await navigator.serviceWorker.getRegistration()) ||
+        (await navigator.serviceWorker.ready.catch(() => null));
+      if (reg?.showNotification) {
         await reg.showNotification(title, {
           body,
           tag,
+          renotify: true,
           badge: "/icons/icon-1024.png",
           icon: "/icons/icon-1024.png",
         });
         return true;
       }
     }
-    new Notification(title, {
+    const n = new Notification(title, {
       body,
       tag,
       icon: "/icons/icon-1024.png",
     });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+    };
     return true;
   } catch {
     return false;
@@ -727,14 +985,29 @@ async function maybeNotifySignalReversal() {
     const key = `${buySignal}=>${currentSignal}`;
     if (signalIsOpposite(buySignal, currentSignal)) {
       if (state.signalAlerts[symbol] !== key) {
+        const short = symbol.replace(".NS", "");
         const body =
-          `${symbol.replace(".NS", "")} flipped from your buy-time ${buySignal} signal to ${currentSignal}. ` +
+          `${short} flipped from your buy-time ${buySignal} signal to ${currentSignal}. ` +
           `Current price: ${money(state.quotes[symbol]?.price, pos.currency)}.`;
-        const sent = await sendBrowserNotification("Pulse signal reversal", body, `signal-${symbol}`);
-        if (!sent) {
-          showTradeToast(
-            `Alert: ${symbol.replace(".NS", "")} moved from <b>${buySignal}</b> to <b>${currentSignal}</b>.`
-          );
+        const sent = await sendBrowserNotification(
+          "Pulse signal reversal",
+          body,
+          `signal-${symbol}`
+        );
+        // Always surface in-app so alerts still work when OS permission is blocked.
+        showTradeToast(
+          `Alert: <b>${short}</b> moved from <b>${buySignal}</b> to <b>${currentSignal}</b>.`
+        );
+        if (!sent && getNotificationPermission() === "denied") {
+          // Soft nudge once per session
+          if (!maybeNotifySignalReversal._nudge) {
+            maybeNotifySignalReversal._nudge = true;
+            setTimeout(() => {
+              showTradeToast(
+                "Browser alerts are blocked — click <b>Alerts blocked</b> to fix."
+              );
+            }, 1800);
+          }
         }
         state.signalAlerts[symbol] = key;
         dirty = true;
@@ -753,17 +1026,40 @@ el.navPortfolio.addEventListener("click", () => {
   el.portfolioPanel.classList.add("flash");
   setTimeout(() => el.portfolioPanel.classList.remove("flash"), 1200);
 });
+el.navBasket?.addEventListener("click", () => setPage("basket"));
+el.navAnalyze?.addEventListener("click", () => setPage("analyze"));
 el.navNews?.addEventListener("click", () => setPage("news"));
-el.enableAlertsBtn?.addEventListener("click", async () => {
-  if (!("Notification" in window)) return;
-  try {
-    await Notification.requestPermission();
-  } catch {}
-  updateAlertsUI();
-  if (Notification.permission === "granted") {
-    maybeNotifySignalReversal();
-  }
+el.enableAlertsBtn?.addEventListener("click", () => {
+  enableOrFixAlerts();
 });
+el.alertsHelpClose?.addEventListener("click", () => closeAlertsHelp());
+el.alertsHelpRetry?.addEventListener("click", async () => {
+  updateAlertsUI();
+  const permission = getNotificationPermission();
+  if (permission === "granted") {
+    closeAlertsHelp();
+    await sendBrowserNotification(
+      "Pulse alerts are on",
+      "You will get a notification when a held stock flips against your buy-time signal.",
+      "pulse-alerts-test"
+    );
+    showTradeToast("Browser alerts enabled.");
+    maybeNotifySignalReversal();
+    return;
+  }
+  if (permission === "default") {
+    closeAlertsHelp();
+    enableOrFixAlerts();
+    return;
+  }
+  // Still blocked — refresh the help copy
+  openAlertsHelp(permission);
+  showTradeToast("Still blocked — allow Notifications in the site settings, then try again.");
+});
+el.alertsHelpOverlay?.addEventListener("click", (e) => {
+  if (e.target === el.alertsHelpOverlay) closeAlertsHelp();
+});
+watchNotificationPermission();
 window.addEventListener("hashchange", () => setPage(getInitialPage(), false));
 
 /* -------------------------------------------------------------------------- */
@@ -977,7 +1273,10 @@ async function fetchUniverse(country) {
 
 async function refreshUniverse() {
   try {
-    state.universe = await fetchUniverse(state.country);
+    const items = await fetchUniverse(state.country);
+    state.universe = (items || []).filter((it) =>
+      matchesMarket(it.symbol, it.currency || (state.country === "IN" ? "INR" : "USD"))
+    );
   } catch {
     state.universe = [];
   }
@@ -1042,72 +1341,157 @@ async function refreshMovers() {
 /* -------------------------------------------------------------------------- */
 
 let newsLoading = false;
+let newsData = null;
+/** @type {{ type: null | "country" | "industry" | "stock", key: string, label: string }} */
+let newsFilter = { type: null, key: "", label: "" };
 
 function newsBiasClass(bias) {
   return bias === "bullish" ? "up" : bias === "bearish" ? "down" : "neutral";
 }
 
+function setNewsFilter(type, key, label) {
+  if (newsFilter.type === type && newsFilter.key === key) {
+    newsFilter = { type: null, key: "", label: "" };
+  } else {
+    newsFilter = { type, key, label };
+  }
+  if (!newsData) return;
+  renderNewsBoards(newsData);
+  renderNewsFeed(newsData.articles || []);
+}
+
+function filteredNewsArticles(articles) {
+  if (!newsFilter.type) return articles || [];
+  return (articles || []).filter((a) => {
+    if (newsFilter.type === "country") {
+      return (a.countries || []).some((c) => c.country === newsFilter.key);
+    }
+    if (newsFilter.type === "industry") {
+      return (a.industries || []).some(
+        (i) => `${i.sector}|${i.industry}` === newsFilter.key
+      );
+    }
+    if (newsFilter.type === "stock") {
+      return (a.stocks || []).some((s) => s.symbol === newsFilter.key);
+    }
+    return true;
+  });
+}
+
 function renderNewsBoards(data) {
   const countryHtml =
     (data.countryImpacts || [])
-      .map(
-        (c) =>
-          `<button type="button" class="news-chip ${newsBiasClass(c.bias)}" title="${escapeAttr(
-            c.impact
-          )}">
+      .map((c) => {
+        const active =
+          newsFilter.type === "country" && newsFilter.key === c.country
+            ? " active"
+            : "";
+        return `<button type="button" class="news-chip ${newsBiasClass(
+          c.bias
+        )}${active}" data-news-filter="country" data-key="${escapeAttr(
+          c.country
+        )}" data-label="${escapeAttr(c.label)}" title="${escapeAttr(
+          c.impact
+        )} — click to filter stories">
             <b>${c.label}</b>
             <span>${c.impact}</span>
             <small>${c.count} stories</small>
-          </button>`
-      )
+          </button>`;
+      })
       .join("") || `<div class="pf-empty">No clear country themes yet.</div>`;
 
   const industryHtml =
     (data.industryImpacts || [])
-      .map(
-        (i) =>
-          `<button type="button" class="news-chip ${newsBiasClass(i.bias)}" title="${escapeAttr(
-            i.why || i.impact
-          )}">
+      .map((i) => {
+        const key = `${i.sector}|${i.industry}`;
+        const active =
+          newsFilter.type === "industry" && newsFilter.key === key
+            ? " active"
+            : "";
+        return `<button type="button" class="news-chip ${newsBiasClass(
+          i.bias
+        )}${active}" data-news-filter="industry" data-key="${escapeAttr(
+          key
+        )}" data-label="${escapeAttr(i.industry)}" title="${escapeAttr(
+          i.why || i.impact
+        )} — click to filter stories">
             <b>${i.industry}</b>
             <span>${i.sector}</span>
             <small>${i.impact} · ${i.count}</small>
-          </button>`
-      )
+          </button>`;
+      })
       .join("") || `<div class="pf-empty">No clear industry themes yet.</div>`;
 
   const stockHtml =
     (data.stockImpacts || [])
-      .map(
-        (s) =>
-          `<button type="button" class="news-chip ${newsBiasClass(s.bias)}" data-symbol="${
-            s.symbol
-          }" title="${escapeAttr(s.why || s.impact)}">
+      .map((s) => {
+        const active =
+          newsFilter.type === "stock" && newsFilter.key === s.symbol
+            ? " active"
+            : "";
+        return `<button type="button" class="news-chip ${newsBiasClass(
+          s.bias
+        )}${active}" data-news-filter="stock" data-key="${escapeAttr(
+          s.symbol
+        )}" data-label="${escapeAttr(
+          s.symbol.replace(".NS", "")
+        )}" data-symbol="${s.symbol}" title="${escapeAttr(
+          s.why || s.impact
+        )} — click to filter; double-click to add">
             <b>${s.symbol.replace(".NS", "")}</b>
             <span>${s.impact}</span>
             <small>${s.count} hits</small>
-          </button>`
-      )
+          </button>`;
+      })
       .join("") || `<div class="pf-empty">No stock links detected yet.</div>`;
 
   if (el.newsCountryBoard) el.newsCountryBoard.innerHTML = countryHtml;
   if (el.newsIndustryBoard) el.newsIndustryBoard.innerHTML = industryHtml;
   if (el.newsStockBoard) el.newsStockBoard.innerHTML = stockHtml;
 
-  el.newsStockBoard?.querySelectorAll("[data-symbol]").forEach((btn) => {
+  const wireFilter = (btn) => {
     btn.addEventListener("click", () => {
-      addSymbol(btn.dataset.symbol);
+      setNewsFilter(btn.dataset.newsFilter, btn.dataset.key, btn.dataset.label);
+    });
+  };
+  el.newsCountryBoard
+    ?.querySelectorAll("[data-news-filter]")
+    .forEach(wireFilter);
+  el.newsIndustryBoard
+    ?.querySelectorAll("[data-news-filter]")
+    .forEach(wireFilter);
+  el.newsStockBoard?.querySelectorAll("[data-news-filter]").forEach((btn) => {
+    wireFilter(btn);
+    btn.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      if (btn.dataset.symbol) addSymbol(btn.dataset.symbol);
     });
   });
 }
 
 function renderNewsFeed(articles) {
   if (!el.newsFeed) return;
+  const filtered = filteredNewsArticles(articles);
   if (!articles?.length) {
     el.newsFeed.innerHTML = `<div class="pf-empty">No headlines available right now.</div>`;
     return;
   }
-  el.newsFeed.innerHTML = articles
+  if (!filtered.length) {
+    el.newsFeed.innerHTML = `<div class="pf-empty">No stories match <b>${escapeAttr(
+      newsFilter.label || "this filter"
+    )}</b>. Click the chip again to clear.</div>`;
+    return;
+  }
+  const filterBanner = newsFilter.type
+    ? `<div class="news-filter-banner">Showing <b>${filtered.length}</b> of ${
+        articles.length
+      } · <b>${escapeAttr(newsFilter.label)}</b>
+        <button type="button" class="mini-btn" id="newsFilterClear">Clear</button>
+      </div>`
+    : "";
+  el.newsFeed.innerHTML =
+    filterBanner +
+    filtered
     .map((a) => {
       const when = a.publishedAt
         ? new Date(a.publishedAt).toLocaleString()
@@ -1149,6 +1533,12 @@ function renderNewsFeed(articles) {
     })
     .join("");
 
+  el.newsFeed.querySelector("#newsFilterClear")?.addEventListener("click", () => {
+    newsFilter = { type: null, key: "", label: "" };
+    if (!newsData) return;
+    renderNewsBoards(newsData);
+    renderNewsFeed(newsData.articles || []);
+  });
   el.newsFeed.querySelectorAll("[data-symbol]").forEach((btn) => {
     btn.addEventListener("click", () => addSymbol(btn.dataset.symbol));
   });
@@ -1162,6 +1552,7 @@ async function refreshNews(force = false) {
     const res = await fetch(`/api/news${force ? "?refresh=1" : ""}`);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "News failed");
+    newsData = data;
     const when = data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : "";
     if (el.newsMeta) {
       el.newsMeta.textContent = `${data.count || 0} stories · ${
@@ -1471,22 +1862,584 @@ function renderTraderClassification() {
 /*  Paper portfolio                                                           */
 /* -------------------------------------------------------------------------- */
 
+/** Latest diversify suggestion (for Buy all). */
+let diversifyPlan = null;
+let diversifyBusy = false;
+
+async function mapPool(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  async function worker() {
+    while (i < items.length) {
+      const idx = i++;
+      out[idx] = await fn(items[idx], idx);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker())
+  );
+  return out;
+}
+
+function heldSectorWeights() {
+  const weights = {};
+  let total = 0;
+  for (const sym of Object.keys(state.portfolio.positions)) {
+    const pos = state.portfolio.positions[sym];
+    const price = state.quotes[sym]?.price ?? pos.avgCost;
+    const value = pos.qty * price;
+    const sector = pos.sector || state.quotes[sym]?.sector || "Unknown";
+    weights[sector] = (weights[sector] || 0) + value;
+    total += value;
+  }
+  if (total > 0) {
+    for (const k of Object.keys(weights)) weights[k] /= total;
+  }
+  return { weights, total };
+}
+
+function diversifyCandidateScore(q, heldSectors) {
+  const reco = q.analysis?.recommendation;
+  if (!isBullishSignal(reco)) return null;
+  const raw = Number(q.analysis?.score);
+  if (!(q.price > 0) || Number.isNaN(raw)) return null;
+  const sector = q.sector || "Unknown";
+  const heldShare = heldSectors.weights[sector] || 0;
+  // Favor strength, slight STRONG BUY boost, and underweight sectors already held.
+  let score = Math.max(raw, 1);
+  if (reco === "STRONG BUY") score += 12;
+  score *= 1 - Math.min(0.55, heldShare * 0.9);
+  if (q.capBucket === "mid") score *= 1.05;
+  if (q.capBucket === "small") score *= 1.03;
+  return score;
+}
+
+/**
+ * Greedy pick: highest score with sector/cap diversification constraints.
+ */
+function pickDiversifiedBasket(candidates, targetCount) {
+  const sorted = [...candidates].sort((a, b) => b.adjScore - a.adjScore);
+  const picked = [];
+  const sectorCount = {};
+  const capCount = {};
+
+  const tryPick = (allowSecondInSector) => {
+    for (const c of sorted) {
+      if (picked.length >= targetCount) break;
+      if (picked.some((p) => p.symbol === c.symbol)) continue;
+      const sector = c.sector || "Unknown";
+      const cap = c.capBucket || "unknown";
+      const sc = sectorCount[sector] || 0;
+      if (sc >= (allowSecondInSector ? 2 : 1)) continue;
+      // Prefer spreading caps once we have a few names
+      if (
+        picked.length >= 2 &&
+        (capCount[cap] || 0) >= Math.ceil(targetCount / 2) &&
+        sorted.some(
+          (x) =>
+            !picked.some((p) => p.symbol === x.symbol) &&
+            (sectorCount[x.sector || "Unknown"] || 0) < (allowSecondInSector ? 2 : 1) &&
+            (x.capBucket || "unknown") !== cap
+        )
+      ) {
+        continue;
+      }
+      picked.push(c);
+      sectorCount[sector] = sc + 1;
+      capCount[cap] = (capCount[cap] || 0) + 1;
+    }
+  };
+
+  tryPick(false);
+  if (picked.length < targetCount) tryPick(true);
+  // Fill remaining without sector cap if still short
+  if (picked.length < targetCount) {
+    for (const c of sorted) {
+      if (picked.length >= targetCount) break;
+      if (picked.some((p) => p.symbol === c.symbol)) continue;
+      picked.push(c);
+    }
+  }
+  return picked;
+}
+
+function allocateQuantities(basket, budget) {
+  if (!basket.length || !(budget > 0)) return [];
+  const weights = basket.map((c) => Math.pow(Math.max(c.adjScore, 1), 1.15));
+  const wSum = weights.reduce((a, b) => a + b, 0) || 1;
+  const rows = basket.map((c, i) => {
+    const alloc = (budget * weights[i]) / wSum;
+    let qty = Math.floor(alloc / c.price);
+    return {
+      ...c,
+      weight: weights[i] / wSum,
+      allocTarget: alloc,
+      qty,
+      spend: qty * c.price,
+    };
+  });
+
+  // Ensure at least 1 share for top names while budget allows
+  let spent = rows.reduce((s, r) => s + r.spend, 0);
+  let leftover = budget - spent;
+  for (const r of rows) {
+    if (r.qty === 0 && r.price <= leftover) {
+      r.qty = 1;
+      r.spend = r.price;
+      leftover -= r.price;
+    }
+  }
+
+  // Greedy leftover: add shares to highest-score affordable names
+  const byScore = [...rows].sort((a, b) => b.adjScore - a.adjScore);
+  let guard = 0;
+  while (leftover > 0 && guard++ < 2000) {
+    let bought = false;
+    for (const r of byScore) {
+      if (r.price <= leftover + 1e-9) {
+        r.qty += 1;
+        r.spend += r.price;
+        leftover -= r.price;
+        bought = true;
+        break;
+      }
+    }
+    if (!bought) break;
+  }
+
+  // Drop zero-qty names and, if leftover remains, try fewer names so budget fills.
+  let filled = rows.filter((r) => r.qty > 0);
+  if (leftover > 0.01 && basket.length > 1) {
+    for (let n = filled.length; n >= 1 && leftover > 0.01; n--) {
+      const subset = pickDiversifiedBasket(basket, n);
+      const retry = allocateQuantitiesOnce(subset, budget);
+      const retrySpent = retry.reduce((s, r) => s + r.spend, 0);
+      const retryLeft = budget - retrySpent;
+      if (retryLeft < leftover) {
+        filled = retry;
+        leftover = retryLeft;
+      }
+      if (leftover <= 0.01) break;
+    }
+  }
+
+  return filled.map((r) => ({
+    ...r,
+    allocPct: (r.spend / Math.max(budget - Math.max(0, leftover), 1)) * 100,
+  }));
+}
+
+/** Single-pass allocation without recursive subset retries. */
+function allocateQuantitiesOnce(basket, budget) {
+  if (!basket.length || !(budget > 0)) return [];
+  const weights = basket.map((c) => Math.pow(Math.max(c.adjScore, 1), 1.15));
+  const wSum = weights.reduce((a, b) => a + b, 0) || 1;
+  const rows = basket.map((c, i) => {
+    const alloc = (budget * weights[i]) / wSum;
+    const qty = Math.floor(alloc / c.price);
+    return { ...c, qty, spend: qty * c.price, adjScore: c.adjScore };
+  });
+  let leftover = budget - rows.reduce((s, r) => s + r.spend, 0);
+  for (const r of rows) {
+    if (r.qty === 0 && r.price <= leftover) {
+      r.qty = 1;
+      r.spend = r.price;
+      leftover -= r.price;
+    }
+  }
+  const byScore = [...rows].sort((a, b) => b.adjScore - a.adjScore);
+  let guard = 0;
+  while (leftover > 0 && guard++ < 2000) {
+    let bought = false;
+    for (const r of byScore) {
+      if (r.price <= leftover + 1e-9) {
+        r.qty += 1;
+        r.spend += r.price;
+        leftover -= r.price;
+        bought = true;
+        break;
+      }
+    }
+    if (!bought) break;
+  }
+  return rows.filter((r) => r.qty > 0);
+}
+
+function syncDiversifyCountryUI() {
+  if (!el.diversifyCountry) return;
+  const pc = state.portfolioCountry;
+  if (pc === "US" || pc === "IN") {
+    el.diversifyCountry.value = pc;
+  } else if (!el.diversifyCountry.value) {
+    el.diversifyCountry.value = state.country || "US";
+  }
+  const ccy = el.diversifyCountry.value === "IN" ? "INR" : "USD";
+  if (el.diversifyBudget && !el.diversifyBudget.dataset.touched) {
+    el.diversifyBudget.value = ccy === "INR" ? "50000" : "5000";
+  }
+}
+
+function clearDiversifyPlan() {
+  diversifyPlan = null;
+  if (el.diversifyResults) el.diversifyResults.innerHTML = "";
+  if (el.diversifyMeta) el.diversifyMeta.textContent = "";
+  el.diversifyCharts?.classList.add("hidden");
+  el.diversifyActions?.classList.add("hidden");
+}
+
+const DIVERSIFY_PIE_COLORS = [
+  "#4f7cff",
+  "#23c98b",
+  "#f5a524",
+  "#ff5c72",
+  "#a78bfa",
+  "#38bdf8",
+  "#fb7185",
+  "#34d399",
+  "#fbbf24",
+  "#818cf8",
+];
+
+function aggregateBasketSlices(rows, keyFn) {
+  const map = {};
+  let total = 0;
+  for (const r of rows) {
+    const key = keyFn(r) || "Unknown";
+    const val = Number(r.spend) || 0;
+    map[key] = (map[key] || 0) + val;
+    total += val;
+  }
+  return Object.entries(map)
+    .map(([label, value]) => ({
+      label,
+      value,
+      pct: total > 0 ? (value / total) * 100 : 0,
+    }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function drawDiversifyPie(canvas, slices) {
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const size = 180;
+  canvas.width = size * dpr;
+  canvas.height = size * dpr;
+  canvas.style.width = size + "px";
+  canvas.style.height = size + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, size, size);
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = size / 2 - 8;
+  const total = slices.reduce((s, x) => s + x.value, 0);
+
+  if (!total) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fill();
+    return;
+  }
+
+  let angle = -Math.PI / 2;
+  slices.forEach((slice, i) => {
+    const sweep = (slice.value / total) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, radius, angle, angle + sweep);
+    ctx.closePath();
+    ctx.fillStyle = DIVERSIFY_PIE_COLORS[i % DIVERSIFY_PIE_COLORS.length];
+    ctx.fill();
+    ctx.strokeStyle = "rgba(11, 16, 32, 0.85)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    angle += sweep;
+  });
+
+  // Donut hole for readability
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius * 0.52, 0, Math.PI * 2);
+  ctx.fillStyle = "#161d33";
+  ctx.fill();
+}
+
+function renderDiversifyPieLegend(container, slices, currency) {
+  if (!container) return;
+  if (!slices.length) {
+    container.innerHTML = `<span class="muted-dash">No data</span>`;
+    return;
+  }
+  container.innerHTML = slices
+    .map((s, i) => {
+      const color = DIVERSIFY_PIE_COLORS[i % DIVERSIFY_PIE_COLORS.length];
+      return `<div class="diversify-legend-row" title="${escapeAttr(s.label)}: ${fmt(
+        s.pct,
+        1
+      )}%">
+        <span class="diversify-swatch" style="background:${color}"></span>
+        <span class="diversify-legend-label">${escapeAttr(s.label)}</span>
+        <b>${fmt(s.pct, 0)}%</b>
+        <small>${money(s.value, currency)}</small>
+      </div>`;
+    })
+    .join("");
+}
+
+function renderDiversifyCharts(plan) {
+  if (!el.diversifyCharts || !plan?.rows?.length) {
+    el.diversifyCharts?.classList.add("hidden");
+    return;
+  }
+  const industrySlices = aggregateBasketSlices(
+    plan.rows,
+    (r) => r.industry || r.sector || "Unknown"
+  );
+  const capSlices = aggregateBasketSlices(plan.rows, (r) => {
+    if (r.capLabel) return r.capLabel;
+    if (r.capBucket === "large") return "Large Cap";
+    if (r.capBucket === "mid") return "Mid Cap";
+    if (r.capBucket === "small") return "Small Cap";
+    return "Unknown";
+  });
+  drawDiversifyPie(el.diversifyIndustryChart, industrySlices);
+  drawDiversifyPie(el.diversifyCapChart, capSlices);
+  renderDiversifyPieLegend(el.diversifyIndustryLegend, industrySlices, plan.currency);
+  renderDiversifyPieLegend(el.diversifyCapLegend, capSlices, plan.currency);
+  el.diversifyCharts.classList.remove("hidden");
+}
+
+function renderDiversifyPlan(plan) {
+  if (!el.diversifyResults) return;
+  if (!plan?.rows?.length) {
+    el.diversifyResults.innerHTML = `<div class="pf-empty">No bullish Pulse ideas found for this market right now. Refresh quotes or try again later.</div>`;
+    el.diversifyCharts?.classList.add("hidden");
+    el.diversifyActions?.classList.add("hidden");
+    return;
+  }
+  const ccy = plan.currency;
+  el.diversifyMeta.innerHTML = `Suggested <b>${plan.rows.length}</b> names · spend <b>${money(
+    plan.spent,
+    ccy
+  )}</b> of <b>${money(plan.budget, ccy)}</b> · sectors: <b>${[
+    ...new Set(plan.rows.map((r) => r.sector || "Unknown")),
+  ].join(", ")}</b>`;
+  renderDiversifyCharts(plan);
+  el.diversifyResults.innerHTML = plan.rows
+    .map(
+      (r) => `
+    <div class="diversify-row" data-symbol="${r.symbol}">
+      <div>
+        <div class="diversify-sym">${r.symbol.replace(".NS", "")}</div>
+        <div class="diversify-name">${escapeAttr(r.name || "")}</div>
+      </div>
+      <div class="diversify-cell"><span>Signal</span><span class="badge ${badgeClass(
+        r.reco
+      )}">${r.reco}${r.rawScore != null ? ` ${r.rawScore > 0 ? "+" : ""}${r.rawScore}` : ""}</span></div>
+      <div class="diversify-cell"><span>Qty</span><b>${r.qty}</b></div>
+      <div class="diversify-cell"><span>Price</span>${money(r.price, ccy)}</div>
+      <div class="diversify-cell"><span>Alloc</span>${money(r.spend, ccy)} · ${fmt(r.allocPct, 0)}%</div>
+      <button type="button" class="mini-btn diversify-buy-one" data-symbol="${r.symbol}">Buy</button>
+      <div class="diversify-why">${escapeAttr(r.why)}</div>
+    </div>`
+    )
+    .join("");
+  el.diversifyActions?.classList.remove("hidden");
+  el.diversifyResults.querySelectorAll(".diversify-buy-one").forEach((btn) => {
+    btn.addEventListener("click", () => buyDiversifyRow(btn.dataset.symbol));
+  });
+}
+
+function buyDiversifyRow(symbol) {
+  const row = diversifyPlan?.rows?.find((r) => r.symbol === symbol);
+  const q = state.quotes[symbol];
+  if (!row || !q?.price) return;
+  const sig = q.analysis
+    ? { recommendation: q.analysis.recommendation, score: q.analysis.score }
+    : null;
+  const basketId = diversifyPlan.basketId || (diversifyPlan.basketId = "b" + Date.now());
+  buyStock(
+    symbol,
+    row.qty,
+    q.price,
+    q.currency,
+    q.name,
+    sig,
+    {
+      industry: q.industry,
+      sector: q.sector,
+      capLabel: q.capLabel,
+    },
+    { source: "basket", basketId }
+  );
+  afterTrade(q, "buy", sig, {
+    qty: row.qty,
+    price: q.price,
+    currency: q.currency,
+    source: "basket",
+  });
+  // Drop purchased row from plan
+  diversifyPlan.rows = diversifyPlan.rows.filter((r) => r.symbol !== symbol);
+  diversifyPlan.spent = diversifyPlan.rows.reduce((s, r) => s + r.spend, 0);
+  renderDiversifyPlan(diversifyPlan);
+}
+
+function buyDiversifyAll() {
+  if (!diversifyPlan?.rows?.length) return;
+  const rows = [...diversifyPlan.rows];
+  const basketId = diversifyPlan.basketId || (diversifyPlan.basketId = "b" + Date.now());
+  let bought = 0;
+  for (const row of rows) {
+    const q = state.quotes[row.symbol];
+    if (!q?.price) continue;
+    const sig = q.analysis
+      ? { recommendation: q.analysis.recommendation, score: q.analysis.score }
+      : null;
+    buyStock(
+      row.symbol,
+      row.qty,
+      q.price,
+      q.currency,
+      q.name,
+      sig,
+      {
+        industry: q.industry,
+        sector: q.sector,
+        capLabel: q.capLabel,
+      },
+      { source: "basket", basketId }
+    );
+    bought += 1;
+  }
+  if (bought) {
+    renderPortfolio();
+    showTradeToast(
+      `Basket buy · <b>${bought}</b> stock${bought === 1 ? "" : "s"}`
+    );
+    setPage("portfolio");
+  }
+  clearDiversifyPlan();
+}
+
+async function generateDiversifyBasket() {
+  if (diversifyBusy) return;
+  const country = el.diversifyCountry?.value || state.country || "US";
+  const budget = Math.max(1, Number(el.diversifyBudget?.value) || 0);
+  const targetCount = Math.min(12, Math.max(2, Math.floor(Number(el.diversifyCount?.value) || 5)));
+  const excludeHeld = !!el.diversifyExcludeHeld?.checked;
+  const currency = country === "IN" ? "INR" : "USD";
+
+  diversifyBusy = true;
+  if (el.diversifyGenerate) el.diversifyGenerate.disabled = true;
+  if (el.diversifyMeta)
+    el.diversifyMeta.textContent = `Scanning ${country} universe for bullish Pulse ideas…`;
+
+  try {
+    let universe = state.universe;
+    if (!universe.length || state.country !== country) {
+      universe = await fetchUniverse(country);
+      if (state.country === country) state.universe = universe;
+    }
+    const symbols = universe.map((it) => it.symbol).filter(Boolean);
+    const missing = symbols.filter((s) => !state.quotes[s]?.analysis);
+    if (missing.length) {
+      if (el.diversifyMeta)
+        el.diversifyMeta.textContent = `Loading quotes for ${missing.length} stocks…`;
+      await mapPool(missing, 6, async (sym) => {
+        try {
+          state.quotes[sym] = await fetchQuote(sym);
+        } catch {
+          /* skip failed */
+        }
+      });
+    }
+
+    const held = heldSectorWeights();
+    const heldSet = new Set(Object.keys(state.portfolio.positions));
+    const candidates = [];
+    for (const sym of symbols) {
+      const q = state.quotes[sym];
+      if (!q) continue;
+      if (excludeHeld && heldSet.has(sym)) continue;
+      if (assetCountry(sym, q.currency) !== country) continue;
+      const adj = diversifyCandidateScore(q, held);
+      if (adj == null) continue;
+      const sector = q.sector || "Unknown";
+      const heldShare = held.weights[sector] || 0;
+      candidates.push({
+        symbol: sym,
+        name: q.name,
+        price: q.price,
+        currency: q.currency,
+        sector,
+        industry: q.industry || null,
+        capBucket: q.capBucket || null,
+        capLabel: q.capLabel || null,
+        reco: q.analysis.recommendation,
+        rawScore: q.analysis.score,
+        adjScore: adj,
+        why: `${q.analysis.recommendation} (Pulse ${
+          q.analysis.score > 0 ? "+" : ""
+        }${q.analysis.score}) · ${q.capLabel || "Cap n/a"} · ${sector}${
+          heldShare > 0.15
+            ? ` · already ${Math.round(heldShare * 100)}% of portfolio`
+            : " · helps diversification"
+        }`,
+      });
+    }
+
+    const basket = pickDiversifiedBasket(candidates, targetCount);
+    const rows = allocateQuantities(basket, budget);
+    const spent = rows.reduce((s, r) => s + r.spend, 0);
+    diversifyPlan = { country, currency, budget, rows, spent };
+    if (el.diversifyMeta && !rows.length && candidates.length) {
+      el.diversifyMeta.textContent =
+        "Found bullish ideas, but the budget is too small for full shares. Increase budget and try again.";
+    }
+    renderDiversifyPlan(diversifyPlan);
+  } catch (err) {
+    if (el.diversifyMeta)
+      el.diversifyMeta.textContent = `Could not build basket: ${err.message || err}`;
+    clearDiversifyPlan();
+  } finally {
+    diversifyBusy = false;
+    if (el.diversifyGenerate) el.diversifyGenerate.disabled = false;
+  }
+}
+
 function renderPortfolio() {
   renderTraderClassification();
   syncPnlPeriodUI();
+  syncDiversifyCountryUI();
   const p = state.portfolio;
-  const symbols = Object.keys(p.positions);
+  const countryFilter = state.portfolioCountry || "ALL";
+  const matchCountry = (symbol, currency) =>
+    countryFilter === "ALL" || assetCountry(symbol, currency) === countryFilter;
+
+  const allSymbols = Object.keys(p.positions);
+  const symbols = allSymbols.filter((sym) =>
+    matchCountry(sym, p.positions[sym].currency)
+  );
+  const filteredTrades = (p.trades || []).filter((t) =>
+    matchCountry(t.symbol, t.currency)
+  );
   const range = getPnlRange();
-  const stats = periodStats(p.trades || [], range.start, range.end);
+  const stats = periodStats(filteredTrades, range.start, range.end);
   const isAll = range.start == null && range.end == null && state.pnlPeriod.key === "all";
 
   const currencies = new Set([
     ...symbols.map((s) => p.positions[s].currency),
-    ...Object.keys(p.realized).filter((c) => p.realized[c]),
+    ...Object.keys(p.realized).filter((c) => {
+      if (!p.realized[c]) return false;
+      if (countryFilter === "ALL") return true;
+      if (countryFilter === "IN") return c === "INR";
+      if (countryFilter === "US") return c === "USD";
+      return true;
+    }),
     ...Object.keys(stats.byCcy),
   ]);
 
-  // Per-currency aggregation (open positions — mark-to-market now)
   const agg = {};
   currencies.forEach((c) => (agg[c] = { invested: 0, value: 0, upl: 0 }));
   symbols.forEach((sym) => {
@@ -1500,12 +2453,19 @@ function renderPortfolio() {
     a.upl += value - invested;
   });
 
-  const hasActivity =
-    symbols.length > 0 ||
+  const hasAnyActivity =
+    allSymbols.length > 0 ||
     (p.trades && p.trades.length > 0) ||
     Object.values(p.realized || {}).some((v) => v);
 
-  if (!hasActivity) {
+  const hasFilteredActivity =
+    symbols.length > 0 ||
+    filteredTrades.length > 0 ||
+    [...currencies].some(
+      (c) => (p.realized[c] || 0) || (stats.byCcy[c]?.realized || 0)
+    );
+
+  if (!hasAnyActivity) {
     el.portfolioSummary.innerHTML = "";
     el.portfolioHoldings.innerHTML = `<div class="pf-empty">You haven't bought any stocks yet. Open a stock and click <b>Buy</b> to start your paper portfolio.</div>`;
     el.tradeHistory.innerHTML = "";
@@ -1514,15 +2474,28 @@ function renderPortfolio() {
     return;
   }
 
-  // Nav badge: all-time total P&L + % per currency
-  const navTotals = [...currencies].map((c) => {
-    const invested = agg[c]?.invested || 0;
-    const total = (agg[c]?.upl || 0) + (p.realized[c] || 0);
+  const navAgg = {};
+  allSymbols.forEach((sym) => {
+    const pos = p.positions[sym];
+    const price = state.quotes[sym]?.price ?? pos.avgCost;
+    const invested = pos.qty * pos.avgCost;
+    const value = pos.qty * price;
+    const a = navAgg[pos.currency] || (navAgg[pos.currency] = { invested: 0, upl: 0 });
+    a.invested += invested;
+    a.upl += value - invested;
+  });
+  const navCurrencies = new Set([
+    ...allSymbols.map((s) => p.positions[s].currency),
+    ...Object.keys(p.realized).filter((c) => p.realized[c]),
+  ]);
+  const navTotals = [...navCurrencies].map((c) => {
+    const invested = navAgg[c]?.invested || 0;
+    const total = (navAgg[c]?.upl || 0) + (p.realized[c] || 0);
     let basis = invested;
     if (!(basis > 0)) {
       basis = (p.trades || [])
         .filter((t) => t.currency === c && t.side === "BUY")
-        .reduce((s, t) => s + t.qty * t.price, 0);
+        .reduce((sum, t) => sum + t.qty * t.price, 0);
     }
     return {
       ccy: c,
@@ -1532,8 +2505,20 @@ function renderPortfolio() {
   });
   updateNavPnl(navTotals);
 
+  if (!hasFilteredActivity) {
+    el.portfolioSummary.innerHTML = `<div class="pnl-period-banner">No ${countryLabel(
+      countryFilter
+    )} activity for <b>${range.label}</b>.</div>`;
+    el.portfolioHoldings.innerHTML = `<div class="pf-empty">No holdings match the ${countryLabel(
+      countryFilter
+    )} filter.</div>`;
+    el.tradeHistory.innerHTML = `<div class="pf-empty">No trades match this country filter.</div>`;
+    if (el.tradeHistoryMeta) el.tradeHistoryMeta.textContent = "(0)";
+    return;
+  }
+
   const periodBanner = `<div class="pnl-period-banner">
-    Showing <b>${range.label}</b>
+    Showing <b>${range.label}</b> · <b>${countryLabel(countryFilter)}</b>
     · ${stats.buys} buy${stats.buys === 1 ? "" : "s"}, ${stats.sells} sell${stats.sells === 1 ? "" : "s"}
     ${
       stats.sells
@@ -1589,11 +2574,11 @@ function renderPortfolio() {
       })
       .join("");
 
-  // Holdings
   if (!symbols.length) {
-    el.portfolioHoldings.innerHTML = `<div class="pf-empty">No open positions. Realized results for this period are shown above.</div>`;
+    el.portfolioHoldings.innerHTML = `<div class="pf-empty">No open ${countryLabel(
+      countryFilter
+    )} positions. Realized results for this filter are shown above.</div>`;
   } else {
-    // Backfill industry/sector from live quotes onto positions when missing.
     let dirty = false;
     symbols.forEach((sym) => {
       const pos = p.positions[sym];
@@ -1614,7 +2599,6 @@ function renderPortfolio() {
     });
     if (dirty) savePortfolio();
 
-    // Sector allocation strip
     const bySector = {};
     let totalValue = 0;
     symbols.forEach((sym) => {
@@ -1663,10 +2647,13 @@ function renderPortfolio() {
             }</span>`
           : `<span class="muted-dash">…</span>`;
         const action = portfolioAction(pos.buySignal, curReco, uplPct);
+        const basketTag = pos.fromBasket
+          ? `<span class="basket-tag" title="Bought via Diversify basket">Basket buy</span>`
+          : "";
         return `
         <div class="pf-holding" data-symbol="${sym}">
           <div class="pfh-main">
-            <div class="pfh-sym">${sym.replace(".NS", "")}</div>
+            <div class="pfh-sym">${sym.replace(".NS", "")}${basketTag}</div>
             <div class="pfh-name">${pos.name || ""}</div>
             <div class="pfh-industry" title="${sector ? `Sector: ${sector}` : ""}">${industryLabel}</div>
           </div>
@@ -1694,8 +2681,7 @@ function renderPortfolio() {
     });
   }
 
-  // Trade history filtered by period
-  const filtered = (p.trades || []).filter((t) =>
+  const filtered = filteredTrades.filter((t) =>
     tradeInRange(t, range.start, range.end)
   );
   if (el.tradeHistoryMeta) {
@@ -1722,16 +2708,22 @@ function renderPortfolio() {
               t.score != null ? ` ${t.score > 0 ? "+" : ""}${t.score}` : ""
             }</span>`
           : "";
+        const basketBadge =
+          t.source === "basket"
+            ? `<span class="basket-tag" title="Bought via Diversify basket">Basket buy</span>`
+            : t.source === "analyze"
+              ? `<span class="basket-tag analyze-tag" title="Bought from Portfolio analyzer">Analyzer buy</span>`
+              : "";
         return `<div class="trade-row">
           <span class="trade-side ${t.side.toLowerCase()}">${t.side}</span>
           <span class="trade-sym">${t.symbol.replace(".NS", "")}</span>
-          <span>${t.qty} @ ${money(t.price, t.currency)}${extra}</span>
+          <span>${t.qty} @ ${money(t.price, t.currency)}${extra}${basketBadge}</span>
           ${sigBadge}
           <span class="trade-when">${when}</span>
         </div>`;
       })
       .join("") ||
-    `<div class="pf-empty">No trades in this period.</div>`;
+    `<div class="pf-empty">No trades in this period for ${countryLabel(countryFilter)}.</div>`;
 }
 
 function pfMetric(label, val, cls = "") {
@@ -1763,18 +2755,655 @@ function updateNavPnl(totals) {
     el.navPnl.className = "nav-pnl";
     return;
   }
+  el.navPnl.className = "nav-pnl";
   el.navPnl.innerHTML = totals
     .map((t) => {
+      const cls = t.total >= 0 ? "up" : "down";
       const moneyPart = signedMoney(t.total, t.ccy);
       const pctPart =
         t.pct != null
           ? `<span class="nav-pct">${signedPct(t.pct)}</span>`
           : "";
-      return `<span class="nav-pnl-item">${moneyPart}${pctPart}</span>`;
+      return `<span class="nav-pnl-item ${cls}">${moneyPart}${pctPart}</span>`;
     })
     .join("");
-  const net = totals.reduce((s, t) => s + Math.sign(t.total), 0);
-  el.navPnl.className = "nav-pnl " + (net >= 0 ? "up" : "down");
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Portfolio analyzer (buy / sell / add suggestions)                         */
+/* -------------------------------------------------------------------------- */
+
+let analyzeBusy = false;
+let analyzePlan = null;
+
+function syncAnalyzeCountryUI() {
+  if (!el.analyzeCountry) return;
+  const pc = state.portfolioCountry;
+  if (pc === "US" || pc === "IN" || pc === "ALL") {
+    el.analyzeCountry.value = pc;
+  }
+  if (el.analyzeBudget && !el.analyzeBudget.dataset.touched) {
+    const c = el.analyzeCountry.value === "IN" ? "IN" : el.analyzeCountry.value === "US" ? "US" : state.country;
+    el.analyzeBudget.value = c === "IN" ? "30000" : "3000";
+  }
+}
+
+function analyzeHoldingSuggestion(symbol, pos, held) {
+  const q = state.quotes[symbol];
+  if (!q?.price || !pos) return null;
+  const reco = q.analysis?.recommendation || null;
+  const score = q.analysis?.score;
+  const invested = pos.qty * pos.avgCost;
+  const value = pos.qty * q.price;
+  const upl = value - invested;
+  const uplPct = invested ? (upl / invested) * 100 : 0;
+  const sector = pos.sector || q.sector || "Unknown";
+  const sectorShare = held.weights[sector] || 0;
+  const reasons = (q.analysis?.reasons || [])
+    .slice(0, 2)
+    .map((r) => r.text || r)
+    .filter(Boolean);
+  const base = {
+    symbol,
+    name: pos.name || q.name || symbol,
+    price: q.price,
+    currency: q.currency || pos.currency,
+    qtyHeld: pos.qty,
+    upl,
+    uplPct,
+    reco,
+    score,
+    sector,
+    sectorShare,
+    reasons,
+  };
+
+  if (isBearishSignal(reco)) {
+    if (uplPct >= 3) {
+      return {
+        ...base,
+        type: "sell",
+        priority: 90 + Math.min(20, uplPct),
+        tone: "down",
+        title: "Take profit — sell",
+        qty: pos.qty,
+        why: `Pulse is ${reco}${score != null ? ` (${score > 0 ? "+" : ""}${score})` : ""} while you are up ${signedPct(
+          uplPct
+        )}. Locking gains may protect profit.${
+          reasons[0] ? ` ${reasons[0]}` : ""
+        }`,
+      };
+    }
+    if (uplPct <= -4) {
+      return {
+        ...base,
+        type: "sell",
+        priority: 85 + Math.min(15, Math.abs(uplPct)),
+        tone: "down",
+        title: "Cut loss — sell",
+        qty: pos.qty,
+        why: `Pulse flipped to ${reco} and the position is down ${signedPct(
+          uplPct
+        )}. Exiting can free cash for stronger ideas.${
+          reasons[0] ? ` ${reasons[0]}` : ""
+        }`,
+      };
+    }
+    const trimQty = Math.max(1, Math.floor(pos.qty / 2));
+    return {
+      ...base,
+      type: "trim",
+      priority: 70,
+      tone: "down",
+      title: "Trim position",
+      qty: trimQty,
+      why: `Pulse is ${reco} with mixed P&L (${signedPct(
+        uplPct
+      )}). Selling about half reduces risk while keeping upside.`,
+    };
+  }
+
+  if (isBullishSignal(reco)) {
+    if (uplPct <= -8) {
+      return {
+        ...base,
+        type: "hold",
+        priority: 35,
+        tone: "muted",
+        title: "Hold — wait for bounce",
+        qty: 0,
+        why: `Still ${reco}, but down ${signedPct(
+          uplPct
+        )}. Avoid averaging recklessly; revisit if Pulse weakens.`,
+      };
+    }
+    if (sectorShare < 0.35 && uplPct >= -2) {
+      return {
+        ...base,
+        type: "hold",
+        priority: 40,
+        tone: "up",
+        title: "Hold — strong Pulse",
+        qty: 0,
+        why: `Pulse remains ${reco}${score != null ? ` (${score > 0 ? "+" : ""}${score})` : ""} and ${sector} is not oversized (${Math.round(
+          sectorShare * 100
+        )}% of portfolio). Use Add budget below for new names rather than averaging here.`,
+      };
+    }
+    return {
+      ...base,
+      type: "hold",
+      priority: 25,
+      tone: "up",
+      title: "Hold",
+      qty: 0,
+      why: `Pulse is ${reco}. Keep the position and monitor for a signal flip.`,
+    };
+  }
+
+  // HOLD / unknown
+  if (uplPct <= -6) {
+    return {
+      ...base,
+      type: "trim",
+      priority: 60,
+      tone: "muted",
+      title: "Review — consider trim",
+      qty: Math.max(1, Math.floor(pos.qty / 2)),
+      why: `No clear Pulse edge (HOLD) and the position is down ${signedPct(
+        uplPct
+      )}. Trimming can reduce drag.`,
+    };
+  }
+  if (sectorShare >= 0.4) {
+    return {
+      ...base,
+      type: "trim",
+      priority: 50,
+      tone: "muted",
+      title: "Trim concentrated sector",
+      qty: Math.max(1, Math.floor(pos.qty / 3)),
+      why: `${sector} is ~${Math.round(
+        sectorShare * 100
+      )}% of your portfolio. Reducing size improves diversification.`,
+    };
+  }
+  return {
+    ...base,
+    type: "hold",
+    priority: 15,
+    tone: "muted",
+    title: "Hold",
+    qty: 0,
+    why: "No urgent change — Pulse is neutral and the position is stable.",
+  };
+}
+
+async function ensureQuotesForAnalyze(symbols) {
+  const missing = symbols.filter((s) => !state.quotes[s]?.analysis);
+  if (!missing.length) return;
+  await mapPool(missing, 6, async (sym) => {
+    try {
+      state.quotes[sym] = await fetchQuote(sym);
+    } catch {
+      /* skip */
+    }
+  });
+}
+
+async function buildAddIdeas(countryFilter, budget, heldSet, held) {
+  const markets =
+    countryFilter === "ALL"
+      ? [state.country === "IN" ? "IN" : "US"]
+      : [countryFilter];
+  const candidates = [];
+  for (const country of markets) {
+    let universe = state.universe;
+    if (!universe.length || state.country !== country) {
+      universe = await fetchUniverse(country);
+      if (state.country === country) state.universe = universe;
+    }
+    const symbols = universe.map((it) => it.symbol).filter(Boolean);
+    await ensureQuotesForAnalyze(symbols.filter((s) => !heldSet.has(s)));
+    for (const sym of symbols) {
+      if (heldSet.has(sym)) continue;
+      const q = state.quotes[sym];
+      if (!q) continue;
+      if (assetCountry(sym, q.currency) !== country) continue;
+      if (!(q.price > 0) || q.price > budget) continue;
+      const adj = diversifyCandidateScore(q, held);
+      if (adj == null) continue;
+      candidates.push({
+        symbol: sym,
+        name: q.name,
+        price: q.price,
+        currency: q.currency,
+        sector: q.sector || "Unknown",
+        industry: q.industry || null,
+        capBucket: q.capBucket || null,
+        capLabel: q.capLabel || null,
+        reco: q.analysis.recommendation,
+        rawScore: q.analysis.score,
+        adjScore: adj,
+      });
+    }
+  }
+  if (!candidates.length) return [];
+
+  // Auto-size how many names from budget vs prices (no separate "New ideas" control).
+  const prices = candidates.map((c) => c.price).sort((a, b) => a - b);
+  const median = prices[Math.floor(prices.length / 2)] || prices[0];
+  const autoCount = Math.min(
+    5,
+    Math.max(1, Math.min(candidates.length, Math.floor(budget / Math.max(median, 1)) || 1))
+  );
+
+  // Prefer a count that can absorb most of the budget.
+  let bestRows = [];
+  let bestSpent = -1;
+  for (let n = autoCount; n >= 1; n--) {
+    const basket = pickDiversifiedBasket(candidates, n);
+    const rows = allocateQuantities(basket, budget);
+    const spent = rows.reduce((s, r) => s + r.spend, 0);
+    if (spent > bestSpent) {
+      bestSpent = spent;
+      bestRows = rows;
+    }
+    // Good enough: within one cheapest share of the budget
+    const minPrice = Math.min(...rows.map((r) => r.price), Infinity);
+    if (budget - spent < minPrice) break;
+  }
+
+  return bestRows.map((r) => ({
+    type: "add",
+    priority: 40 + Math.min(30, r.adjScore / 3),
+    tone: "up",
+    title: "Buy new stock",
+    symbol: r.symbol,
+    name: r.name,
+    price: r.price,
+    currency: r.currency,
+    qty: r.qty,
+    qtyHeld: 0,
+    upl: 0,
+    uplPct: 0,
+    reco: r.reco,
+    score: r.rawScore,
+    sector: r.sector,
+    industry: r.industry,
+    capLabel: r.capLabel,
+    capBucket: r.capBucket,
+    sectorShare: 0,
+    spend: r.spend,
+    why: `New ${r.reco} idea outside your book · ${
+      r.capLabel || "Cap n/a"
+    } · ${r.sector || "Unknown"} · spend ${money(r.spend, r.currency)}`,
+    reasons: [],
+  }));
+}
+
+function capLabelFromRow(r) {
+  if (r.capLabel) return r.capLabel;
+  if (r.capBucket === "large") return "Large Cap";
+  if (r.capBucket === "mid") return "Mid Cap";
+  if (r.capBucket === "small") return "Small Cap";
+  return "Unknown";
+}
+
+function buildAnalyzePortfolioRows(symbols) {
+  const byCcy = {};
+  for (const sym of symbols) {
+    const pos = state.portfolio.positions[sym];
+    const q = state.quotes[sym];
+    if (!pos) continue;
+    const price = q?.price ?? pos.avgCost;
+    const spend = pos.qty * price;
+    if (!(spend > 0)) continue;
+    const ccy = pos.currency || q?.currency || "USD";
+    const row = {
+      symbol: sym,
+      qty: pos.qty,
+      price,
+      spend,
+      currency: ccy,
+      industry: pos.industry || q?.industry || null,
+      sector: pos.sector || q?.sector || "Unknown",
+      capLabel: pos.capLabel || q?.capLabel || null,
+      capBucket: q?.capBucket || null,
+    };
+    (byCcy[ccy] || (byCcy[ccy] = [])).push(row);
+  }
+  // Prefer a single currency chart set (largest book).
+  const currencies = Object.keys(byCcy);
+  if (!currencies.length) return { currency: "USD", rows: [] };
+  currencies.sort(
+    (a, b) =>
+      byCcy[b].reduce((s, r) => s + r.spend, 0) -
+      byCcy[a].reduce((s, r) => s + r.spend, 0)
+  );
+  const currency = currencies[0];
+  return { currency, rows: byCcy[currency] };
+}
+
+/** Apply actionable suggestions onto a copy of current rows. */
+function projectAnalyzePortfolio(currentRows, suggestions, currency) {
+  const map = {};
+  for (const r of currentRows) {
+    map[r.symbol] = { ...r };
+  }
+  for (const s of suggestions || []) {
+    if (s.type === "hold") continue;
+    if (s.currency && s.currency !== currency) continue;
+    if (s.type === "sell") {
+      delete map[s.symbol];
+      continue;
+    }
+    if (s.type === "trim") {
+      const row = map[s.symbol];
+      if (!row) continue;
+      const qty = Math.max(0, row.qty - (s.qty || 0));
+      if (qty <= 0) delete map[s.symbol];
+      else {
+        row.qty = qty;
+        row.spend = qty * row.price;
+      }
+      continue;
+    }
+    if (s.type === "buy_more" || s.type === "add") {
+      const q = state.quotes[s.symbol];
+      const price = s.price || q?.price;
+      const qtyAdd = s.qty || 0;
+      if (!(price > 0) || !(qtyAdd > 0)) continue;
+      if (!map[s.symbol]) {
+        map[s.symbol] = {
+          symbol: s.symbol,
+          qty: 0,
+          price,
+          spend: 0,
+          currency: s.currency || currency,
+          industry: s.industry || q?.industry || null,
+          sector: s.sector || q?.sector || "Unknown",
+          capLabel: s.capLabel || q?.capLabel || null,
+          capBucket: s.capBucket || q?.capBucket || null,
+        };
+      }
+      const row = map[s.symbol];
+      row.qty += qtyAdd;
+      row.price = price;
+      row.spend = row.qty * price;
+      if (!row.industry) row.industry = q?.industry || s.industry || null;
+      if (!row.sector || row.sector === "Unknown")
+        row.sector = q?.sector || s.sector || "Unknown";
+      if (!row.capLabel) row.capLabel = q?.capLabel || s.capLabel || null;
+      if (!row.capBucket) row.capBucket = q?.capBucket || s.capBucket || null;
+    }
+  }
+  return Object.values(map).filter((r) => r.spend > 0);
+}
+
+function renderAnalyzeAllocationCharts(currentRows, projectedRows, currency) {
+  if (!el.analyzeCharts) return;
+  if (!currentRows?.length && !projectedRows?.length) {
+    el.analyzeCharts.classList.add("hidden");
+    return;
+  }
+  const industryKey = (r) => r.industry || r.sector || "Unknown";
+  const nowIndustry = aggregateBasketSlices(currentRows || [], industryKey);
+  const nowCap = aggregateBasketSlices(currentRows || [], capLabelFromRow);
+  const newIndustry = aggregateBasketSlices(projectedRows || [], industryKey);
+  const newCap = aggregateBasketSlices(projectedRows || [], capLabelFromRow);
+
+  drawDiversifyPie(el.analyzeNowIndustryChart, nowIndustry);
+  drawDiversifyPie(el.analyzeNowCapChart, nowCap);
+  drawDiversifyPie(el.analyzeNewIndustryChart, newIndustry);
+  drawDiversifyPie(el.analyzeNewCapChart, newCap);
+  renderDiversifyPieLegend(el.analyzeNowIndustryLegend, nowIndustry, currency);
+  renderDiversifyPieLegend(el.analyzeNowCapLegend, nowCap, currency);
+  renderDiversifyPieLegend(el.analyzeNewIndustryLegend, newIndustry, currency);
+  renderDiversifyPieLegend(el.analyzeNewCapLegend, newCap, currency);
+  el.analyzeCharts.classList.remove("hidden");
+}
+
+function renderAnalyzePlan(plan) {
+  if (!el.analyzeResults) return;
+  if (!plan) {
+    el.analyzeResults.innerHTML = "";
+    if (el.analyzeSummary) el.analyzeSummary.innerHTML = "";
+    if (el.analyzeMeta) el.analyzeMeta.textContent = "";
+    el.analyzeCharts?.classList.add("hidden");
+    return;
+  }
+  const actions = plan.suggestions.filter((s) => s.type !== "hold");
+  const holds = plan.suggestions.filter((s) => s.type === "hold");
+  const buyIdeas = plan.suggestions.filter((s) => s.type === "add");
+  const buySpend = buyIdeas.reduce((s, r) => s + (r.spend || r.qty * r.price || 0), 0);
+  const buyCcy = buyIdeas[0]?.currency || plan.chartCurrency || "USD";
+  if (el.analyzeSummary) {
+    el.analyzeSummary.innerHTML = `
+      <div class="analyze-stat"><span>Holdings reviewed</span><b>${plan.holdingCount}</b></div>
+      <div class="analyze-stat"><span>Action ideas</span><b>${actions.length}</b></div>
+      <div class="analyze-stat"><span>Hold</span><b>${holds.length}</b></div>
+      <div class="analyze-stat"><span>Buy spend</span><b>${money(buySpend, buyCcy)}</b></div>
+      <div class="analyze-stat"><span>Add budget</span><b>${money(
+        plan.budget || buySpend,
+        buyCcy
+      )}</b></div>`;
+  }
+  if (el.analyzeMeta) {
+    el.analyzeMeta.innerHTML = plan.summaryHtml || "";
+  }
+  if (plan.currentRows || plan.projectedRows) {
+    renderAnalyzeAllocationCharts(
+      plan.currentRows || [],
+      plan.projectedRows || [],
+      plan.chartCurrency || "USD"
+    );
+  } else {
+    el.analyzeCharts?.classList.add("hidden");
+  }
+  if (!plan.suggestions.length) {
+    el.analyzeResults.innerHTML = `<div class="pf-empty">No holdings to analyze. Buy stocks from Market or Basket first.</div>`;
+    return;
+  }
+  el.analyzeResults.innerHTML = plan.suggestions
+    .map((s, idx) => {
+      const short = s.symbol.replace(".NS", "");
+      const pnl =
+        s.type === "add"
+          ? ""
+          : `<div class="analyze-cell"><span>P&amp;L</span><b class="${
+              s.upl >= 0 ? "up" : "down"
+            }">${signedMoney(s.upl, s.currency)} (${signedPct(s.uplPct)})</b></div>`;
+      const qtyLabel =
+        s.type === "add"
+          ? `Buy ${s.qty}`
+          : s.type === "sell"
+            ? `Sell ${s.qty}`
+            : s.type === "trim"
+              ? `Trim ${s.qty}`
+              : "—";
+      const spendAmt =
+        s.type === "add"
+          ? s.spend != null
+            ? s.spend
+            : s.qty * s.price
+          : null;
+      const btn =
+        s.type === "hold"
+          ? ""
+          : `<button type="button" class="mini-btn ${
+              s.type === "add" ? "primary" : ""
+            } analyze-act" data-idx="${idx}">${
+              s.type === "add" ? "Buy" : s.type === "trim" ? "Trim" : "Sell"
+            }</button>`;
+      const badge = s.reco
+        ? `<span class="badge ${badgeClass(s.reco)}">${s.reco}${
+            s.score != null ? ` ${s.score > 0 ? "+" : ""}${s.score}` : ""
+          }</span>`
+        : "";
+      return `<div class="analyze-card tone-${s.tone}" data-idx="${idx}">
+        <div class="analyze-card-top">
+          <div>
+            <div class="analyze-title">${escapeAttr(s.title)}</div>
+            <div class="analyze-sym">${short} <span class="analyze-name">${escapeAttr(
+        s.name || ""
+      )}</span></div>
+          </div>
+          ${badge}
+        </div>
+        <div class="analyze-grid">
+          <div class="analyze-cell"><span>Action</span><b>${qtyLabel}</b></div>
+          <div class="analyze-cell"><span>Price</span>${money(s.price, s.currency)}</div>
+          ${
+            spendAmt != null
+              ? `<div class="analyze-cell"><span>Spend</span><b>${money(
+                  spendAmt,
+                  s.currency
+                )}</b></div>`
+              : `<div class="analyze-cell"><span>Held</span>${s.qtyHeld}</div>`
+          }
+          ${pnl}
+        </div>
+        <p class="analyze-why">${escapeAttr(s.why)}</p>
+        <div class="analyze-card-actions">${btn}</div>
+      </div>`;
+    })
+    .join("");
+
+  el.analyzeResults.querySelectorAll(".analyze-act").forEach((btn) => {
+    btn.addEventListener("click", () => applyAnalyzeSuggestion(Number(btn.dataset.idx)));
+  });
+}
+
+function applyAnalyzeSuggestion(idx) {
+  const s = analyzePlan?.suggestions?.[idx];
+  if (!s) return;
+  const q = state.quotes[s.symbol];
+  if (!q?.price && (s.type === "sell" || s.type === "trim" || s.type === "add")) {
+    showTradeToast("Quote unavailable — refresh and try again.");
+    return;
+  }
+  const sig = q?.analysis
+    ? { recommendation: q.analysis.recommendation, score: q.analysis.score }
+    : null;
+
+  if (s.type === "sell" || s.type === "trim") {
+    const result = sellStock(s.symbol, s.qty, q.price, q.currency || s.currency, sig);
+    if (!result) return;
+    afterTrade(q, "sell", sig, result);
+    showTradeToast(
+      `${s.type === "trim" ? "Trimmed" : "Sold"} ${result.qty} ${s.symbol.replace(".NS", "")} · suggestion applied`
+    );
+  } else if (s.type === "add") {
+    buyStock(
+      s.symbol,
+      s.qty,
+      q.price,
+      q.currency || s.currency,
+      q.name || s.name,
+      sig,
+      {
+        industry: q.industry,
+        sector: q.sector,
+        capLabel: q.capLabel,
+      },
+      { source: "analyze" }
+    );
+    afterTrade(q, "buy", sig, { qty: s.qty, price: q.price, currency: q.currency });
+  } else {
+    return;
+  }
+
+  // Refresh analysis after an action
+  runPortfolioAnalysis({ quiet: true });
+}
+
+async function runPortfolioAnalysis(opts = {}) {
+  if (analyzeBusy) return;
+  analyzeBusy = true;
+  if (el.analyzeRun) el.analyzeRun.disabled = true;
+  if (el.analyzeMeta && !opts.quiet)
+    el.analyzeMeta.textContent = "Reviewing holdings and scanning for better ideas…";
+
+  try {
+    syncAnalyzeCountryUI();
+    const countryFilter = el.analyzeCountry?.value || "ALL";
+    const budget = Math.max(1, Number(el.analyzeBudget?.value) || 3000);
+
+    const held = heldSectorWeights();
+    const symbols = Object.keys(state.portfolio.positions).filter((sym) => {
+      const pos = state.portfolio.positions[sym];
+      if (countryFilter === "ALL") return true;
+      return assetCountry(sym, pos.currency) === countryFilter;
+    });
+
+    await ensureQuotesForAnalyze(symbols);
+
+    const holdingSuggestions = symbols
+      .map((sym) => analyzeHoldingSuggestion(sym, state.portfolio.positions[sym], held))
+      .filter(Boolean);
+
+    const heldSet = new Set(Object.keys(state.portfolio.positions));
+    const addIdeas = symbols.length
+      ? await buildAddIdeas(countryFilter, budget, heldSet, held)
+      : [];
+
+    const buySpend = addIdeas.reduce((s, r) => s + (r.spend || 0), 0);
+    const buyCcy = addIdeas[0]?.currency || (countryFilter === "IN" ? "INR" : "USD");
+
+    const suggestions = [...holdingSuggestions, ...addIdeas].sort(
+      (a, b) => b.priority - a.priority
+    );
+
+    const sells = suggestions.filter((s) => s.type === "sell" || s.type === "trim").length;
+    const adds = addIdeas.length;
+    const trader = classifyTrader(state.portfolio);
+
+    const { currency: chartCurrency, rows: currentRows } =
+      buildAnalyzePortfolioRows(symbols);
+    const projectedRows = projectAnalyzePortfolio(
+      currentRows,
+      suggestions,
+      chartCurrency
+    );
+    const nowTotal = currentRows.reduce((s, r) => s + r.spend, 0);
+    const newTotal = projectedRows.reduce((s, r) => s + r.spend, 0);
+    const leftover = Math.max(0, budget - buySpend);
+
+    analyzePlan = {
+      holdingCount: symbols.length,
+      suggestions,
+      currentRows,
+      projectedRows,
+      chartCurrency,
+      buySpend,
+      budget,
+      summaryHtml: symbols.length
+        ? `Style: <b>${trader.label}</b> · <b>${sells}</b> exit/trim · <b>${adds}</b> buy${
+            adds === 1 ? "" : "s"
+          } · add budget <b>${money(budget, buyCcy)}</b> → buys total <b>${money(
+            buySpend,
+            buyCcy
+          )}</b>${
+            leftover > 0.01
+              ? ` · <span class="down">${money(leftover, buyCcy)} undeployed</span> (share prices)`
+              : ""
+          } · book <b>${money(nowTotal, chartCurrency)}</b> → <b>${money(
+            newTotal,
+            chartCurrency
+          )}</b>`
+        : "Add holdings first, then run Analyze.",
+    };
+    renderAnalyzePlan(analyzePlan);
+  } catch (err) {
+    if (el.analyzeMeta)
+      el.analyzeMeta.textContent = `Analysis failed: ${err.message || err}`;
+    analyzePlan = null;
+    renderAnalyzePlan(null);
+  } finally {
+    analyzeBusy = false;
+    if (el.analyzeRun) el.analyzeRun.disabled = false;
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1787,12 +3416,19 @@ function renderWatchlist() {
   el.watchlist.innerHTML = "";
   const signalFilter = state.recoFilter;
   const capFilter = state.capFilter;
+  const marketLabel = state.country === "IN" ? "India" : "US";
   let shown = 0;
   let hidden = 0;
   let items =
     state.marketView === "all"
       ? state.universe
       : state.watchlist.map((symbol) => ({ symbol, name: null }));
+
+  // Always respect the Market country toggle (US / India).
+  items = items.filter((item) => {
+    const q = state.quotes[item.symbol];
+    return matchesMarket(item.symbol, q?.currency);
+  });
 
   const sortVal = state.sortBy;
   items = [...items].sort((a, b) => {
@@ -1881,20 +3517,22 @@ function renderWatchlist() {
   });
 
   if (el.filterCount) {
-    const label = state.marketView === "all" ? "market stocks" : "stocks";
+    const label =
+      state.marketView === "all" ? `${marketLabel} market stocks` : `${marketLabel} stocks`;
     el.filterCount.textContent =
       signalFilter === "ALL" && capFilter === "ALL"
         ? `${shown} ${label}`
-        : `${shown} match · ${hidden} hidden`;
+        : `${shown} match · ${hidden} hidden · ${marketLabel}`;
   }
   if (shown === 0) {
     const li = document.createElement("li");
     li.className = "wl-empty";
-    li.textContent = state.marketView === "all"
-      ? "No stocks match the current signal / market-cap filters."
-      : signalFilter === "ALL" && capFilter === "ALL"
-        ? "No stocks yet — search above to add."
-        : "No watchlist stocks match the current filters.";
+    li.textContent =
+      state.marketView === "all"
+        ? `No ${marketLabel} stocks match the current signal / market-cap filters.`
+        : signalFilter === "ALL" && capFilter === "ALL"
+          ? `No ${marketLabel} stocks yet — search above to add.`
+          : `No ${marketLabel} watchlist stocks match the current filters.`;
     el.watchlist.appendChild(li);
   }
 }
@@ -1944,6 +3582,13 @@ function normalizeSymbol(symbol) {
 
 function addSymbol(symbol) {
   symbol = normalizeSymbol(symbol);
+  if (!matchesMarket(symbol)) {
+    const need = assetCountry(symbol) === "IN" ? "India" : "United States";
+    showTradeToast(
+      `Switch Market to <b>${need}</b> to add <b>${symbol.replace(".NS", "")}</b>.`
+    );
+    return;
+  }
   if (!state.watchlist.includes(symbol)) {
     state.watchlist.push(symbol);
     saveWatchlist();
@@ -2221,8 +3866,10 @@ function afterTrade(q, side, sig, result) {
   }
   if (side === "buy") {
     const qty = result?.qty || 0;
+    const basketNote = result?.source === "basket" ? ` · <span class="basket-tag">Basket buy</span>` : "";
     showTradeToast(
       `Bought ${qty} ${short}` +
+        basketNote +
         (sig && sig.recommendation
           ? ` · Pulse was <span class="badge ${badgeClass(sig.recommendation)}">${sig.recommendation}${
               sig.score != null ? ` ${sig.score > 0 ? "+" : ""}${sig.score}` : ""
@@ -2823,24 +4470,30 @@ el.search.addEventListener("input", () => {
         `/api/search?q=${encodeURIComponent(q)}&country=${state.country}`
       );
       const items = await res.json();
-      renderSuggestions(items);
+      const filtered = (items || []).filter((it) =>
+        assetCountry(it.symbol, it.currency) === state.country
+      );
+      renderSuggestions(filtered);
     } catch {
       closeSuggestions();
     }
   }, 200);
 });
 
-function closeSuggestions() {
-  el.suggestions.classList.remove("open");
-  lastSuggestions = [];
-  activeIdx = -1;
+function updateSearchPlaceholder() {
+  if (!el.search) return;
+  el.search.placeholder =
+    state.country === "IN"
+      ? "Search India stocks (e.g. RELIANCE, TCS, Infosys)…"
+      : "Search US stocks (e.g. AAPL, Tesla, NVDA)…";
 }
 
 function renderSuggestions(items) {
   lastSuggestions = items || [];
   activeIdx = -1;
+  const marketLabel = state.country === "IN" ? "India" : "US";
   if (!lastSuggestions.length) {
-    el.suggestions.innerHTML = `<div class="suggestion empty">No matches — press Enter to try the symbol anyway</div>`;
+    el.suggestions.innerHTML = `<div class="suggestion empty">No ${marketLabel} stocks match — press Enter to try the symbol anyway</div>`;
     el.suggestions.classList.add("open");
     return;
   }
@@ -2954,7 +4607,9 @@ el.country.addEventListener("change", () => {
   state.country = el.country.value;
   saveCountry();
   updateMarketHoursUI();
-  state.watchlist = loadWatchlist(state.country);
+  updateSearchPlaceholder();
+  state.watchlist = filterByMarket(loadWatchlist(state.country));
+  saveWatchlist();
   state.universe = [];
   state.quotes = {};
   state.selected = null;
@@ -3040,6 +4695,59 @@ if (el.pnlCustomApply) {
     renderPortfolio();
   });
 }
+if (el.portfolioCountry) {
+  el.portfolioCountry.addEventListener("change", () => {
+    state.portfolioCountry = el.portfolioCountry.value || "ALL";
+    savePortfolioCountry();
+    syncDiversifyCountryUI();
+    renderPortfolio();
+  });
+}
+
+el.diversifyGenerate?.addEventListener("click", () => generateDiversifyBasket());
+el.diversifyBuyAll?.addEventListener("click", () => {
+  if (!diversifyPlan?.rows?.length) return;
+  if (
+    !confirm(
+      `Buy all ${diversifyPlan.rows.length} suggested stocks for about ${money(
+        diversifyPlan.spent,
+        diversifyPlan.currency
+      )}?`
+    )
+  )
+    return;
+  buyDiversifyAll();
+});
+el.diversifyClear?.addEventListener("click", () => clearDiversifyPlan());
+el.diversifyBudget?.addEventListener("input", () => {
+  el.diversifyBudget.dataset.touched = "1";
+});
+el.diversifyCountry?.addEventListener("change", () => {
+  if (el.diversifyBudget && !el.diversifyBudget.dataset.touched) {
+    el.diversifyBudget.value =
+      el.diversifyCountry.value === "IN" ? "50000" : "5000";
+  }
+});
+
+el.portfolioAnalyzeBtn?.addEventListener("click", () => {
+  setPage("analyze");
+  runPortfolioAnalysis();
+});
+el.analyzeRun?.addEventListener("click", () => runPortfolioAnalysis());
+el.analyzeBudget?.addEventListener("input", () => {
+  if (el.analyzeBudget) el.analyzeBudget.dataset.touched = "1";
+});
+el.analyzeCountry?.addEventListener("change", () => {
+  if (el.analyzeBudget && !el.analyzeBudget.dataset.touched) {
+    const c =
+      el.analyzeCountry.value === "IN"
+        ? "IN"
+        : el.analyzeCountry.value === "US"
+          ? "US"
+          : state.country;
+    el.analyzeBudget.value = c === "IN" ? "30000" : "3000";
+  }
+});
 
 window.addEventListener("resize", () => {
   if (state.selected && state.quotes[state.selected]) {
@@ -3060,6 +4768,14 @@ function bootData() {
   if (updateMarketHoursUI._timer) clearInterval(updateMarketHoursUI._timer);
   updateMarketHoursUI._timer = setInterval(updateMarketHoursUI, 30_000);
   el.country.value = state.country;
+  updateSearchPlaceholder();
+  {
+    const wl = filterByMarket(state.watchlist);
+    if (wl.length !== state.watchlist.length) {
+      state.watchlist = wl;
+      saveWatchlist();
+    }
+  }
   renderWatchlist();
   renderPortfolio();
   refreshMovers();
@@ -3082,6 +4798,7 @@ async function reloadUserData() {
   state.chart = loadChartConfig();
   state.portfolio = loadPortfolio();
   state.pnlPeriod = loadPnlPeriod();
+  state.portfolioCountry = loadPortfolioCountry();
   state.signalAlerts = loadSignalAlerts();
   state.recoFilter = "ALL";
   state.quotes = {};
