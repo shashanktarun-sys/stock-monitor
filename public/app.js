@@ -740,6 +740,7 @@ const el = {
   agentCreateBtn: document.getElementById("agentCreateBtn"),
   agentCreateError: document.getElementById("agentCreateError"),
   navPnl: document.getElementById("navPnl"),
+  navAgentPnl: document.getElementById("navAgentPnl"),
   newsPanel: document.getElementById("newsPanel"),
   newsRefresh: document.getElementById("newsRefresh"),
   newsMeta: document.getElementById("newsMeta"),
@@ -3366,36 +3367,7 @@ function renderPortfolio() {
     return;
   }
 
-  const navAgg = {};
-  allSymbols.forEach((sym) => {
-    const pos = p.positions[sym];
-    const price = state.quotes[sym]?.price ?? pos.avgCost;
-    const invested = pos.qty * pos.avgCost;
-    const value = pos.qty * price;
-    const a = navAgg[pos.currency] || (navAgg[pos.currency] = { invested: 0, upl: 0 });
-    a.invested += invested;
-    a.upl += value - invested;
-  });
-  const navCurrencies = new Set([
-    ...allSymbols.map((s) => p.positions[s].currency),
-    ...Object.keys(p.realized).filter((c) => p.realized[c]),
-  ]);
-  const navTotals = [...navCurrencies].map((c) => {
-    const invested = navAgg[c]?.invested || 0;
-    const total = (navAgg[c]?.upl || 0) + (p.realized[c] || 0);
-    let basis = invested;
-    if (!(basis > 0)) {
-      basis = (p.trades || [])
-        .filter((t) => t.currency === c && t.side === "BUY")
-        .reduce((sum, t) => sum + t.qty * t.price, 0);
-    }
-    return {
-      ccy: c,
-      total,
-      pct: basis > 0 ? (total / basis) * 100 : null,
-    };
-  });
-  updateNavPnl(navTotals);
+  updateNavPnl(computePilotNavTotals());
 
   if (!hasFilteredActivity) {
     el.portfolioSummary.innerHTML = `
@@ -3659,25 +3631,97 @@ function portfolioAction(buySignal, currentSignal, uplPct) {
   return { label: "Hold", cls: "muted" };
 }
 
-function updateNavPnl(totals) {
-  if (!el.navPnl) return;
-  if (!totals.length) {
-    el.navPnl.innerHTML = "";
-    el.navPnl.className = "nav-pnl";
-    return;
+function computePilotNavTotals() {
+  const p = state.portfolio;
+  const allSymbols = Object.keys(p.positions || {});
+  const navAgg = {};
+  allSymbols.forEach((sym) => {
+    const pos = p.positions[sym];
+    const price = state.quotes[sym]?.price ?? pos.avgCost;
+    const invested = pos.qty * pos.avgCost;
+    const value = pos.qty * price;
+    const a = navAgg[pos.currency] || (navAgg[pos.currency] = { invested: 0, upl: 0 });
+    a.invested += invested;
+    a.upl += value - invested;
+  });
+  const navCurrencies = new Set([
+    ...allSymbols.map((s) => p.positions[s].currency),
+    ...Object.keys(p.realized || {}).filter((c) => p.realized[c]),
+  ]);
+  return [...navCurrencies].map((c) => {
+    const invested = navAgg[c]?.invested || 0;
+    const total = (navAgg[c]?.upl || 0) + (p.realized[c] || 0);
+    let basis = invested;
+    if (!(basis > 0)) {
+      basis = (p.trades || [])
+        .filter((t) => t.currency === c && t.side === "BUY")
+        .reduce((sum, t) => sum + t.qty * t.price, 0);
+    }
+    return {
+      ccy: c,
+      total,
+      pct: basis > 0 ? (total / basis) * 100 : null,
+    };
+  });
+}
+
+function computeAgentNavTotals() {
+  const byCcy = {};
+  for (const agent of state.agents || []) {
+    const cur = agentCurrency(agent.country);
+    let mv = 0;
+    let invested = 0;
+    for (const [sym, pos] of Object.entries(agent.positions || {})) {
+      const price = state.quotes[sym]?.price ?? pos.avgCost;
+      mv += pos.qty * price;
+      invested += pos.qty * pos.avgCost;
+    }
+    const equity = (agent.cash || 0) + mv;
+    const pnl = equity - (agent.corpus || 0);
+    const a = byCcy[cur] || (byCcy[cur] = { pnl: 0, corpus: 0, invested: 0 });
+    a.pnl += pnl;
+    a.corpus += agent.corpus || 0;
+    a.invested += invested;
   }
-  el.navPnl.className = "nav-pnl";
-  el.navPnl.innerHTML = totals
+  return Object.entries(byCcy).map(([ccy, a]) => {
+    const basis = a.corpus > 0 ? a.corpus : a.invested;
+    return {
+      ccy,
+      total: a.pnl,
+      pct: basis > 0 ? (a.pnl / basis) * 100 : null,
+    };
+  });
+}
+
+function formatNavPnlItems(totals) {
+  if (!totals.length) return `<span class="nav-pnl-empty">—</span>`;
+  return totals
     .map((t) => {
       const cls = t.total >= 0 ? "up" : "down";
       const moneyPart = signedMoney(t.total, t.ccy);
       const pctPart =
-        t.pct != null
-          ? `<span class="nav-pct">${signedPct(t.pct)}</span>`
-          : "";
+        t.pct != null ? `<span class="nav-pct">${signedPct(t.pct)}</span>` : "";
       return `<span class="nav-pnl-item ${cls}">${moneyPart}${pctPart}</span>`;
     })
     .join("");
+}
+
+function updateNavPnl(totals) {
+  // Back-compat: refresh both Pilot and Agents from live state.
+  refreshNavDeskPnl(totals);
+}
+
+function refreshNavDeskPnl(pilotTotals) {
+  const pilot = Array.isArray(pilotTotals) ? pilotTotals : computePilotNavTotals();
+  const agents = computeAgentNavTotals();
+  if (el.navPnl) {
+    el.navPnl.className = "nav-pnl";
+    el.navPnl.innerHTML = formatNavPnlItems(pilot);
+  }
+  if (el.navAgentPnl) {
+    el.navAgentPnl.className = "nav-pnl";
+    el.navAgentPnl.innerHTML = formatNavPnlItems(agents);
+  }
 }
 
 /* -------------------------------------------------------------------------- */

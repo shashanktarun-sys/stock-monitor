@@ -141,6 +141,36 @@ body {
   display: none;
 }
 
+.nav-desk-btn {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 7px 12px;
+}
+.nav-desk-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.nav-desk-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.nav-desk-name {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 4.6rem;
+}
+.nav-pnl-empty {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+
 .nav-pnl {
   display: inline-flex;
   align-items: center;
@@ -3037,7 +3067,7 @@ body {
   opacity: 0.98;
 }
 
-/* Portfolio desk — Pilot book + Agent books */
+/* Portfolio desk ? Pilot book + Agent books */
 .portfolio-desk-sub {
   margin: 0 16px 12px;
   font-size: 13px;
