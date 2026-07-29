@@ -1700,6 +1700,18 @@ body {
   border-radius: 10px;
   padding: 10px 12px;
 }
+.pf-holding-clickable {
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.pf-holding-clickable:hover {
+  border-color: color-mix(in srgb, var(--accent, #3b82f6) 55%, var(--border));
+  background: color-mix(in srgb, var(--bg-soft) 80%, var(--accent, #3b82f6) 8%);
+}
+.pf-holding-clickable:focus-visible {
+  outline: 2px solid var(--accent, #3b82f6);
+  outline-offset: 2px;
+}
 @media (max-width: 900px) {
   .pf-holding {
     grid-template-columns: 1fr 1fr 1fr;

@@ -3703,7 +3703,7 @@ function renderAgentPortfolioSummary(countryFilter) {
       const upl = value - invested;
       const uplPct = invested ? (upl / invested) * 100 : 0;
       const cls = upl >= 0 ? "up" : "down";
-      return `<div class="pf-holding agent-holding">
+      return `<div class="pf-holding agent-holding" data-symbol="${symbol}" role="button" tabindex="0" title="Open market analysis">
         <div class="pfh-main">
           <div class="pfh-sym">${symbol.replace(".NS", "")}<span class="basket-tag agent-tag" title="Held by trading agent">Agent · ${agentName}</span></div>
           <div class="pfh-name">${pos.name || ""}</div>
@@ -3737,12 +3737,37 @@ function renderAgentPortfolioSummary(countryFilter) {
   el.portfolioAgentsSummary.querySelector("#portfolioGotoAgents")?.addEventListener("click", () =>
     setPage("agents")
   );
-  el.portfolioAgentsSummary.querySelectorAll(".pfh-open").forEach((btn) => {
+  wireHoldingRowClicks(el.portfolioAgentsSummary);
+}
+
+function openHoldingAnalysis(symbol) {
+  if (!symbol) return;
+  selectSymbol(symbol);
+  requestAnimationFrame(() => {
+    el.detailContent?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+function wireHoldingRowClicks(root) {
+  if (!root) return;
+  root.querySelectorAll(".pf-holding[data-symbol]").forEach((row) => {
+    row.classList.add("pf-holding-clickable");
+    const open = () => openHoldingAnalysis(row.dataset.symbol);
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("button, a, input, select, textarea")) return;
+      open();
+    });
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
+    });
+  });
+  root.querySelectorAll(".pfh-open").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      selectSymbol(btn.dataset.symbol);
-      setPage("market");
-      el.detailContent?.scrollIntoView({ behavior: "smooth", block: "start" });
+      openHoldingAnalysis(btn.dataset.symbol);
     });
   });
 }
@@ -4052,7 +4077,7 @@ function renderPortfolio() {
           ? `<span class="basket-tag" title="Bought via Diversify basket">Basket buy</span>`
           : "";
         return `
-        <div class="pf-holding" data-symbol="${sym}">
+        <div class="pf-holding" data-symbol="${sym}" role="button" tabindex="0" title="Open market analysis">
           <div class="pfh-main">
             <div class="pfh-sym">${sym.replace(".NS", "")}${basketTag}</div>
             <div class="pfh-name">${pos.name || ""}</div>
@@ -4074,13 +4099,7 @@ function renderPortfolio() {
       .join("");
     el.portfolioHoldings.innerHTML =
       `<div class="agent-pf-holdings-label">Pilot holdings</div>` + sectorHtml + rows;
-    el.portfolioHoldings.querySelectorAll(".pfh-open").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        selectSymbol(btn.dataset.symbol);
-        el.detailContent.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
-    });
+    wireHoldingRowClicks(el.portfolioHoldings);
   }
 
   const visibleTrades = state.portfolioBookTab === "agents" ? agentView.trades : filteredTrades;
