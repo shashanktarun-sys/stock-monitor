@@ -31,6 +31,7 @@ const state = {
   sortBy: "symbol",
   chart: loadChartConfig(),
   portfolio: loadPortfolio(),
+  agents: loadAgents(),
   pnlPeriod: loadPnlPeriod(),
   portfolioCountry: loadPortfolioCountry(),
   signalAlerts: loadSignalAlerts(),
@@ -49,6 +50,19 @@ function loadPortfolio() {
       };
   } catch {}
   return empty;
+}
+
+function loadAgents() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey("agents")));
+    if (Array.isArray(saved)) return saved;
+  } catch {}
+  return [];
+}
+
+function saveAgents() {
+  localStorage.setItem(storageKey("agents"), JSON.stringify(state.agents || []));
+  scheduleServerSync();
 }
 
 function savePortfolio() {
@@ -471,6 +485,7 @@ function buildSyncPayload() {
       IN: Array.isArray(wlIN) ? wlIN : state.country === "IN" ? state.watchlist : null,
     },
     portfolio: state.portfolio,
+    agents: state.agents || [],
     chartConfig: state.chart,
     moversUniverse: {
       US: loadMoversUniverse("US"),
@@ -504,6 +519,11 @@ function applyServerData(data) {
       realized: data.portfolio.realized || {},
     };
     localStorage.setItem(storageKey("portfolio"), JSON.stringify(state.portfolio));
+  }
+
+  if (Array.isArray(data.agents)) {
+    state.agents = data.agents;
+    localStorage.setItem(storageKey("agents"), JSON.stringify(state.agents));
   }
 
   if (data.chartConfig && data.chartConfig.overlays) {
@@ -541,7 +561,7 @@ function hasServerSideData(data) {
     data.portfolio &&
     (Object.keys(data.portfolio.positions || {}).length > 0 ||
       (data.portfolio.trades || []).length > 0);
-  return Boolean(hasWl || hasPf || data.updatedAt);
+  return Boolean(hasWl || hasPf || data.updatedAt || (Array.isArray(data.agents) && data.agents.length));
 }
 
 async function pullServerData() {
@@ -619,6 +639,7 @@ const el = {
   portfolioPage: document.getElementById("portfolioPage"),
   basketPage: document.getElementById("basketPage"),
   analyzePage: document.getElementById("analyzePage"),
+  agentsPage: document.getElementById("agentsPage"),
   newsPage: document.getElementById("newsPage"),
   country: document.getElementById("country"),
   marketHours: document.getElementById("marketHours"),
@@ -700,7 +721,22 @@ const el = {
   navPortfolio: document.getElementById("navPortfolio"),
   navBasket: document.getElementById("navBasket"),
   navAnalyze: document.getElementById("navAnalyze"),
+  navAgents: document.getElementById("navAgents"),
   navNews: document.getElementById("navNews"),
+  agentsMeta: document.getElementById("agentsMeta"),
+  agentsList: document.getElementById("agentsList"),
+  agentCreateForm: document.getElementById("agentCreateForm"),
+  agentName: document.getElementById("agentName"),
+  agentGoal: document.getElementById("agentGoal"),
+  agentCorpus: document.getElementById("agentCorpus"),
+  agentTargetProfit: document.getElementById("agentTargetProfit"),
+  agentHorizon: document.getElementById("agentHorizon"),
+  agentCountry: document.getElementById("agentCountry"),
+  agentCapFilter: document.getElementById("agentCapFilter"),
+  agentMaxPos: document.getElementById("agentMaxPos"),
+  agentAuthorize: document.getElementById("agentAuthorize"),
+  agentCreateBtn: document.getElementById("agentCreateBtn"),
+  agentCreateError: document.getElementById("agentCreateError"),
   navPnl: document.getElementById("navPnl"),
   newsPanel: document.getElementById("newsPanel"),
   newsRefresh: document.getElementById("newsRefresh"),
@@ -819,6 +855,7 @@ function getInitialPage() {
   if (h === "#portfolio") return "portfolio";
   if (h === "#basket") return "basket";
   if (h === "#analyze") return "analyze";
+  if (h === "#agents") return "agents";
   if (h === "#news") return "news";
   return "market";
 }
@@ -827,17 +864,20 @@ function setPage(page, pushHash = true) {
   if (page === "portfolio") state.page = "portfolio";
   else if (page === "basket") state.page = "basket";
   else if (page === "analyze") state.page = "analyze";
+  else if (page === "agents") state.page = "agents";
   else if (page === "news") state.page = "news";
   else state.page = "market";
   el.marketPage?.classList.toggle("hidden", state.page !== "market");
   el.portfolioPage?.classList.toggle("hidden", state.page !== "portfolio");
   el.basketPage?.classList.toggle("hidden", state.page !== "basket");
   el.analyzePage?.classList.toggle("hidden", state.page !== "analyze");
+  el.agentsPage?.classList.toggle("hidden", state.page !== "agents");
   el.newsPage?.classList.toggle("hidden", state.page !== "news");
   el.navMarket?.classList.toggle("active", state.page === "market");
   el.navPortfolio?.classList.toggle("active", state.page === "portfolio");
   el.navBasket?.classList.toggle("active", state.page === "basket");
   el.navAnalyze?.classList.toggle("active", state.page === "analyze");
+  el.navAgents?.classList.toggle("active", state.page === "agents");
   el.navNews?.classList.toggle("active", state.page === "news");
   if (pushHash) {
     const hash =
@@ -847,9 +887,11 @@ function setPage(page, pushHash = true) {
           ? "#basket"
           : state.page === "analyze"
             ? "#analyze"
-            : state.page === "news"
-              ? "#news"
-              : "#market";
+            : state.page === "agents"
+              ? "#agents"
+              : state.page === "news"
+                ? "#news"
+                : "#market";
     if (window.location.hash !== hash) {
       window.history.replaceState(null, "", hash);
     }
@@ -857,6 +899,484 @@ function setPage(page, pushHash = true) {
   if (state.page === "news") refreshNews();
   if (state.page === "basket") syncDiversifyCountryUI();
   if (state.page === "analyze") syncAnalyzeCountryUI();
+  if (state.page === "agents") {
+    if (el.agentCountry) el.agentCountry.value = state.country;
+    renderAgents();
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Goal-driven paper trading agents (corpus-limited)                         */
+/* -------------------------------------------------------------------------- */
+
+let agentRunBusy = false;
+let agentAutoTimer = null;
+
+function agentCurrency(country) {
+  return country === "IN" ? "INR" : "USD";
+}
+
+function agentLog(agent, message) {
+  agent.logs = Array.isArray(agent.logs) ? agent.logs : [];
+  agent.logs.unshift({ ts: Date.now(), message: String(message).slice(0, 240) });
+  agent.logs = agent.logs.slice(0, 40);
+}
+
+function agentEquity(agent) {
+  let mv = 0;
+  for (const [sym, pos] of Object.entries(agent.positions || {})) {
+    const q = state.quotes[sym];
+    const px = q?.price > 0 ? q.price : pos.avgCost;
+    mv += pos.qty * px;
+  }
+  return (agent.cash || 0) + mv;
+}
+
+function agentPnl(agent) {
+  return agentEquity(agent) - (agent.corpus || 0);
+}
+
+function agentInvested(agent) {
+  return Object.values(agent.positions || {}).reduce(
+    (s, p) => s + p.qty * p.avgCost,
+    0
+  );
+}
+
+function matchesAgentCap(q, capFilter) {
+  if (!capFilter || capFilter === "all") return true;
+  return (q.capBucket || "") === capFilter;
+}
+
+function createAgentFromForm() {
+  const name = String(el.agentName?.value || "").trim().slice(0, 60);
+  const goal = String(el.agentGoal?.value || "").trim().slice(0, 200);
+  const corpus = Math.floor(Number(el.agentCorpus?.value) || 0);
+  const targetProfit = Math.floor(Number(el.agentTargetProfit?.value) || 0);
+  const horizonDays = Math.max(1, Math.min(90, Math.floor(Number(el.agentHorizon?.value) || 1)));
+  const country = el.agentCountry?.value === "IN" ? "IN" : "US";
+  const capFilter = el.agentCapFilter?.value || "large";
+  const maxPositions = Math.max(1, Math.min(12, Math.floor(Number(el.agentMaxPos?.value) || 5)));
+  const authorized = !!el.agentAuthorize?.checked;
+
+  if (!name) return { error: "Give the agent a name." };
+  if (!goal) return { error: "Describe the goal." };
+  if (!(corpus >= 100)) return { error: "Corpus must be at least 100." };
+  if (!(targetProfit >= 1)) return { error: "Target profit must be positive." };
+  if (!authorized) return { error: "Authorization is required so the agent can trade within the corpus." };
+
+  const now = Date.now();
+  return {
+    agent: {
+      id: "ag_" + now.toString(36) + Math.random().toString(36).slice(2, 7),
+      name,
+      goal,
+      corpus,
+      cash: corpus,
+      targetProfit,
+      horizonDays,
+      deadlineAt: now + horizonDays * 86400000,
+      country,
+      capFilter,
+      maxPositions,
+      authorized: true,
+      status: "active",
+      positions: {},
+      trades: [],
+      realizedPnl: 0,
+      logs: [
+        {
+          ts: now,
+          message: `Created with corpus ${corpus}. Authorized to buy/sell within this corpus only.`,
+        },
+      ],
+      createdAt: now,
+      lastRunAt: null,
+    },
+  };
+}
+
+function agentBuy(agent, symbol, qty, price, q) {
+  qty = Math.floor(qty);
+  if (!(qty > 0) || !(price > 0)) return false;
+  const cost = qty * price;
+  if (cost > agent.cash + 1e-9) return false;
+  // Hard corpus cap: invested cost basis + this buy cannot exceed corpus
+  if (agentInvested(agent) + cost > agent.corpus + 1e-9) return false;
+
+  const pos = agent.positions[symbol] || {
+    qty: 0,
+    avgCost: 0,
+    currency: q.currency,
+    name: q.name,
+  };
+  const newQty = pos.qty + qty;
+  pos.avgCost = (pos.qty * pos.avgCost + qty * price) / newQty;
+  pos.qty = newQty;
+  pos.currency = q.currency;
+  pos.name = q.name || pos.name;
+  pos.capBucket = q.capBucket || pos.capBucket;
+  pos.industry = q.industry || pos.industry;
+  pos.sector = q.sector || pos.sector;
+  agent.positions[symbol] = pos;
+  agent.cash -= cost;
+  agent.trades.unshift({
+    symbol,
+    side: "BUY",
+    qty,
+    price,
+    currency: q.currency,
+    ts: Date.now(),
+    agentId: agent.id,
+  });
+  agent.trades = agent.trades.slice(0, 200);
+  return true;
+}
+
+function agentSell(agent, symbol, qty, price) {
+  const pos = agent.positions[symbol];
+  if (!pos) return null;
+  qty = Math.min(Math.floor(qty), pos.qty);
+  if (!(qty > 0) || !(price > 0)) return null;
+  const proceeds = qty * price;
+  const realized = (price - pos.avgCost) * qty;
+  agent.cash += proceeds;
+  agent.realizedPnl = (agent.realizedPnl || 0) + realized;
+  pos.qty -= qty;
+  agent.trades.unshift({
+    symbol,
+    side: "SELL",
+    qty,
+    price,
+    currency: pos.currency,
+    realized,
+    ts: Date.now(),
+    agentId: agent.id,
+  });
+  agent.trades = agent.trades.slice(0, 200);
+  if (pos.qty <= 0) delete agent.positions[symbol];
+  return { qty, price, realized };
+}
+
+async function runAgentOnce(agentId) {
+  const agent = (state.agents || []).find((a) => a.id === agentId);
+  if (!agent) return;
+  if (!agent.authorized) {
+    agentLog(agent, "Blocked: not authorized by user.");
+    saveAgents();
+    renderAgents();
+    return;
+  }
+  if (agent.status === "paused") {
+    agentLog(agent, "Skipped: agent is paused.");
+    saveAgents();
+    renderAgents();
+    return;
+  }
+  if (agent.status === "completed" || agent.status === "failed" || agent.status === "expired") {
+    return;
+  }
+
+  const currency = agentCurrency(agent.country);
+  const country = agent.country === "IN" ? "IN" : "US";
+
+  let universe = state.universe;
+  if (!universe.length || state.country !== country) {
+    universe = await fetchUniverse(country);
+    if (state.country === country) state.universe = universe;
+  }
+  const symbols = universe.map((it) => it.symbol).filter(Boolean);
+  const held = Object.keys(agent.positions || {});
+  await ensureQuotesForAnalyze([...new Set([...symbols, ...held])]);
+
+  const pnl = agentPnl(agent);
+  const now = Date.now();
+  agent.lastRunAt = now;
+
+  if (pnl >= agent.targetProfit) {
+    // Lock gains: sell all if still holding
+    for (const sym of Object.keys(agent.positions)) {
+      const q = state.quotes[sym];
+      const px = q?.price;
+      if (!(px > 0)) continue;
+      const sold = agentSell(agent, sym, agent.positions[sym].qty, px);
+      if (sold) agentLog(agent, `Goal hit — sold ${sold.qty} ${sym.replace(".NS", "")} @ ${px}`);
+    }
+    agent.status = "completed";
+    agentLog(
+      agent,
+      `Goal reached: P&L ${money(agentPnl(agent), currency)} vs target ${money(agent.targetProfit, currency)}.`
+    );
+    saveAgents();
+    renderAgents();
+    showTradeToast(`Agent <b>${agent.name}</b> hit its profit goal`);
+    return;
+  }
+
+  if (now > agent.deadlineAt) {
+    agent.status = pnl >= 0 ? "expired" : "failed";
+    agentLog(
+      agent,
+      `Deadline passed. Final P&L ${money(pnl, currency)} (target ${money(agent.targetProfit, currency)}).`
+    );
+    saveAgents();
+    renderAgents();
+    return;
+  }
+
+  const stress = assessMarketStress(country);
+  const hoursLeft = (agent.deadlineAt - now) / 3600000;
+  let actions = 0;
+
+  // Risk-off sells / take-profit / cut losses
+  for (const [sym, pos] of Object.entries({ ...agent.positions })) {
+    const q = state.quotes[sym];
+    if (!q?.price) continue;
+    const reco = q.analysis?.recommendation || "";
+    const unreal = ((q.price - pos.avgCost) / pos.avgCost) * 100;
+    let sellQty = 0;
+    let why = "";
+    if (reco === "STRONG SELL" || reco === "SELL") {
+      sellQty = pos.qty;
+      why = `Pulse ${reco}`;
+    } else if (unreal >= 8 || (hoursLeft < 12 && unreal >= 3)) {
+      sellQty = Math.max(1, Math.floor(pos.qty * (hoursLeft < 12 ? 1 : 0.5)));
+      why = `take-profit ${unreal.toFixed(1)}%`;
+    } else if (hoursLeft < 6 && unreal <= -5) {
+      sellQty = pos.qty;
+      why = `deadline cut-loss ${unreal.toFixed(1)}%`;
+    } else if (stress.level === "crash" && unreal < 0) {
+      sellQty = Math.max(1, Math.floor(pos.qty * 0.5));
+      why = "crash risk trim";
+    }
+    if (sellQty > 0) {
+      const sold = agentSell(agent, sym, sellQty, q.price);
+      if (sold) {
+        actions += 1;
+        agentLog(agent, `SELL ${sold.qty} ${sym.replace(".NS", "")} @ ${q.price} (${why})`);
+      }
+    }
+  }
+
+  // Buys within remaining cash / corpus — skip if crash unless already invested
+  const posCount = Object.keys(agent.positions).length;
+  const canBuy =
+    agent.cash >= 50 &&
+    posCount < agent.maxPositions &&
+    stress.level !== "crash" &&
+    hoursLeft > 2;
+
+  if (canBuy) {
+    const candidates = [];
+    for (const sym of symbols) {
+      const q = state.quotes[sym];
+      if (!q?.analysis || !(q.price > 0)) continue;
+      if (assetCountry(sym, q.currency) !== country) continue;
+      if (!matchesAgentCap(q, agent.capFilter)) continue;
+      const reco = q.analysis.recommendation;
+      if (reco !== "BUY" && reco !== "STRONG BUY") continue;
+      if (agent.positions[sym]) continue;
+      if (q.price > agent.cash) continue;
+      candidates.push({
+        symbol: sym,
+        q,
+        score: q.analysis.score || 0,
+      });
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    const slots = agent.maxPositions - Object.keys(agent.positions).length;
+    const picks = candidates.slice(0, Math.max(1, slots));
+    const budgetEach = agent.cash / Math.max(1, picks.length);
+    for (const c of picks) {
+      if (Object.keys(agent.positions).length >= agent.maxPositions) break;
+      const qty = Math.floor(budgetEach / c.q.price);
+      if (qty < 1) continue;
+      // Final corpus check
+      const cost = qty * c.q.price;
+      if (cost > agent.cash) continue;
+      if (agentInvested(agent) + cost > agent.corpus) continue;
+      if (agentBuy(agent, c.symbol, qty, c.q.price, c.q)) {
+        actions += 1;
+        agentLog(
+          agent,
+          `BUY ${qty} ${c.symbol.replace(".NS", "")} @ ${c.q.price} (${c.q.analysis.recommendation}, ${c.q.capLabel || agent.capFilter})`
+        );
+      }
+    }
+  }
+
+  if (!actions) {
+    agentLog(
+      agent,
+      `No trades. Cash ${money(agent.cash, currency)} · P&L ${money(agentPnl(agent), currency)} · ${Math.ceil(hoursLeft / 24)}d left`
+    );
+  }
+
+  // Re-check goal after trades
+  if (agentPnl(agent) >= agent.targetProfit) {
+    agent.status = "completed";
+    agentLog(agent, `Goal reached after this run.`);
+    showTradeToast(`Agent <b>${agent.name}</b> hit its profit goal`);
+  }
+
+  saveAgents();
+  renderAgents();
+}
+
+function renderAgents() {
+  if (!el.agentsList) return;
+  const agents = state.agents || [];
+  const active = agents.filter((a) => a.status === "active").length;
+  if (el.agentsMeta) {
+    el.agentsMeta.innerHTML = agents.length
+      ? `<b>${agents.length}</b> agent${agents.length === 1 ? "" : "s"} · <b>${active}</b> active · separate paper books (corpus-capped)`
+      : "No agents yet — create one above.";
+  }
+  if (!agents.length) {
+    el.agentsList.innerHTML = `<div class="pf-empty">Assign a goal, corpus, and authorization to start a paper agent.</div>`;
+    return;
+  }
+
+  el.agentsList.innerHTML = agents
+    .map((a) => {
+      const cur = agentCurrency(a.country);
+      const pnl = agentPnl(a);
+      const equity = agentEquity(a);
+      const progress = Math.max(0, Math.min(100, (pnl / Math.max(1, a.targetProfit)) * 100));
+      const leftMs = a.deadlineAt - Date.now();
+      const leftLabel =
+        leftMs <= 0
+          ? "Deadline passed"
+          : leftMs < 86400000
+            ? `${Math.ceil(leftMs / 3600000)}h left`
+            : `${Math.ceil(leftMs / 86400000)}d left`;
+      const holdings = Object.entries(a.positions || {})
+        .map(([sym, p]) => {
+          const q = state.quotes[sym];
+          const px = q?.price || p.avgCost;
+          const u = (px - p.avgCost) * p.qty;
+          return `<li><b>${sym.replace(".NS", "")}</b> ×${p.qty} · ${money(px, cur)} · <span class="${u >= 0 ? "up" : "down"}">${money(u, cur)}</span></li>`;
+        })
+        .join("");
+      const logs = (a.logs || [])
+        .slice(0, 5)
+        .map(
+          (l) =>
+            `<li><span class="agent-log-ts">${new Date(l.ts).toLocaleString()}</span> ${l.message}</li>`
+        )
+        .join("");
+      return `<article class="agent-card" data-id="${a.id}">
+        <div class="agent-card-head">
+          <div>
+            <h3>${a.name}</h3>
+            <p class="agent-goal">${a.goal}</p>
+          </div>
+          <span class="agent-status status-${a.status}">${a.status}</span>
+        </div>
+        <div class="agent-stats">
+          <div><span class="label">Corpus</span><b>${money(a.corpus, cur)}</b></div>
+          <div><span class="label">Cash</span><b>${money(a.cash, cur)}</b></div>
+          <div><span class="label">Equity</span><b>${money(equity, cur)}</b></div>
+          <div><span class="label">P&amp;L</span><b class="${pnl >= 0 ? "up" : "down"}">${money(pnl, cur)}</b></div>
+          <div><span class="label">Target</span><b>${money(a.targetProfit, cur)}</b></div>
+          <div><span class="label">Horizon</span><b>${leftLabel}</b></div>
+        </div>
+        <div class="agent-progress" title="Progress to profit target">
+          <div class="agent-progress-bar" style="width:${progress}%"></div>
+        </div>
+        <p class="agent-meta-line">${a.country} · ${a.capFilter} cap · max ${a.maxPositions} positions · ${a.authorized ? "authorized" : "not authorized"}</p>
+        ${holdings ? `<ul class="agent-holdings">${holdings}</ul>` : `<p class="agent-meta-line">No holdings yet</p>`}
+        <div class="agent-actions">
+          <button type="button" class="mini-btn primary agent-run" data-id="${a.id}" ${a.status === "active" ? "" : "disabled"}>Run now</button>
+          <button type="button" class="mini-btn agent-toggle" data-id="${a.id}">${a.status === "paused" ? "Resume" : "Pause"}</button>
+          <button type="button" class="mini-btn agent-delete" data-id="${a.id}">Delete</button>
+        </div>
+        ${logs ? `<ul class="agent-logs">${logs}</ul>` : ""}
+      </article>`;
+    })
+    .join("");
+
+  el.agentsList.querySelectorAll(".agent-run").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (agentRunBusy) return;
+      agentRunBusy = true;
+      btn.disabled = true;
+      try {
+        if (el.agentsMeta) el.agentsMeta.textContent = "Agent running — scanning universe…";
+        await runAgentOnce(btn.dataset.id);
+      } finally {
+        agentRunBusy = false;
+      }
+    });
+  });
+  el.agentsList.querySelectorAll(".agent-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const a = state.agents.find((x) => x.id === btn.dataset.id);
+      if (!a) return;
+      if (a.status === "paused") {
+        a.status = "active";
+        agentLog(a, "Resumed by user.");
+      } else if (a.status === "active") {
+        a.status = "paused";
+        agentLog(a, "Paused by user.");
+      }
+      saveAgents();
+      renderAgents();
+    });
+  });
+  el.agentsList.querySelectorAll(".agent-delete").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const a = state.agents.find((x) => x.id === btn.dataset.id);
+      if (!a) return;
+      if (!confirm(`Delete agent "${a.name}"? Its paper book will be removed.`)) return;
+      state.agents = state.agents.filter((x) => x.id !== a.id);
+      saveAgents();
+      renderAgents();
+    });
+  });
+}
+
+el.agentCreateForm?.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (el.agentCreateError) {
+    el.agentCreateError.textContent = "";
+    el.agentCreateError.classList.add("hidden");
+  }
+  const result = createAgentFromForm();
+  if (result.error) {
+    if (el.agentCreateError) {
+      el.agentCreateError.textContent = result.error;
+      el.agentCreateError.classList.remove("hidden");
+    }
+    return;
+  }
+  state.agents = [result.agent, ...(state.agents || [])].slice(0, 40);
+  saveAgents();
+  el.agentCreateForm.reset();
+  if (el.agentCorpus) el.agentCorpus.value = "50000";
+  if (el.agentTargetProfit) el.agentTargetProfit.value = "5000";
+  if (el.agentHorizon) el.agentHorizon.value = "2";
+  if (el.agentMaxPos) el.agentMaxPos.value = "5";
+  if (el.agentAuthorize) el.agentAuthorize.checked = true;
+  if (el.agentCountry) el.agentCountry.value = state.country;
+  if (el.agentCapFilter) el.agentCapFilter.value = "large";
+  renderAgents();
+  showTradeToast(`Agent <b>${result.agent.name}</b> created · corpus-limited paper trading`);
+});
+
+function scheduleAgentAutoRuns() {
+  if (agentAutoTimer) clearInterval(agentAutoTimer);
+  agentAutoTimer = setInterval(() => {
+    if (agentRunBusy || document.hidden) return;
+    const due = (state.agents || []).filter(
+      (a) =>
+        a.status === "active" &&
+        a.authorized &&
+        (!a.lastRunAt || Date.now() - a.lastRunAt > 120000)
+    );
+    if (!due.length) return;
+    runAgentOnce(due[0].id);
+  }, 60000);
 }
 
 function getNotificationPermission() {
@@ -1116,6 +1636,7 @@ el.navPortfolio.addEventListener("click", () => {
 });
 el.navBasket?.addEventListener("click", () => setPage("basket"));
 el.navAnalyze?.addEventListener("click", () => setPage("analyze"));
+el.navAgents?.addEventListener("click", () => setPage("agents"));
 el.navNews?.addEventListener("click", () => setPage("news"));
 el.enableAlertsBtn?.addEventListener("click", () => {
   enableOrFixAlerts();
@@ -5184,6 +5705,7 @@ async function reloadUserData() {
   state.universe = [];
   state.chart = loadChartConfig();
   state.portfolio = loadPortfolio();
+  state.agents = loadAgents();
   state.pnlPeriod = loadPnlPeriod();
   state.portfolioCountry = loadPortfolioCountry();
   state.signalAlerts = loadSignalAlerts();
@@ -5794,4 +6316,5 @@ if ("serviceWorker" in navigator) {
 }
 
 scheduleRefresh();
+scheduleAgentAutoRuns();
 initAuth();

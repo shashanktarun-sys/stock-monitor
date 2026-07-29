@@ -2846,3 +2846,145 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+
+/* ---- Trading agents ---- */
+.agents-page .diversify-sub {
+  max-width: 720px;
+}
+.agent-create {
+  margin: 16px 0 24px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+.agent-create h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.agent-create-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+.agent-create-grid label input[type="text"] {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.agent-create-grid label:nth-child(2) {
+  grid-column: 1 / -1;
+}
+.agent-auth-check {
+  margin: 12px 0;
+}
+.agent-create-actions {
+  margin-top: 8px;
+}
+.agents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.agent-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--panel);
+}
+.agent-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.agent-card-head h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+.agent-goal {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.agent-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.agent-status.status-active {
+  color: var(--green);
+  border-color: rgba(35, 201, 139, 0.35);
+}
+.agent-status.status-completed {
+  color: var(--accent);
+  border-color: rgba(79, 124, 255, 0.4);
+}
+.agent-status.status-failed,
+.agent-status.status-expired {
+  color: var(--red);
+  border-color: rgba(255, 92, 114, 0.35);
+}
+.agent-status.status-paused {
+  color: var(--amber);
+}
+.agent-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 10px;
+  margin: 14px 0 10px;
+}
+.agent-stats .label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.agent-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.agent-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--green));
+  border-radius: inherit;
+}
+.agent-meta-line {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.agent-holdings,
+.agent-logs {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text);
+}
+.agent-logs {
+  color: var(--muted);
+  font-size: 12px;
+}
+.agent-log-ts {
+  color: var(--muted);
+  opacity: 0.8;
+  margin-right: 6px;
+}
+.agent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}

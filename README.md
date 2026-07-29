@@ -18,6 +18,7 @@ A web app that monitors stock prices in near real time and generates
 - 🧠 **Signal engine** that explains *why* it recommends a move.
 - 📈 Indicator dashboard: RSI(14), SMA 10/20/50, MACD, 5-day rate of change.
 - 💼 **Paper-trading portfolio** — buy/sell with virtual money and track profit/loss.
+- 🤖 **Trading agents** — assign a goal and corpus (e.g. invest 50k in large caps, target +5k in 2 days); authorized agents may buy/sell **only within that corpus** on a separate paper book.
 - 🔐 **Accounts** — sign up with **email + password (verified by an emailed 6-digit OTP)**, or use optional **Google sign-in**. Each account gets its own namespaced watchlist & portfolio in the browser. You can also **continue as a guest**.
 
 ### Live data & Indian stocks

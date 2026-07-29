@@ -59,6 +59,9 @@
           <button id="navAnalyze" class="nav-btn" title="Analyze portfolio and suggest buy/sell changes">
             🔎 Analyze
           </button>
+          <button id="navAgents" class="nav-btn" title="Create goal-driven paper trading agents">
+            🤖 Agents
+          </button>
           <button id="navNews" class="nav-btn" title="World news impact analyzer">
             📰 News
           </button>
@@ -380,6 +383,86 @@
         </div>
         <div id="analyzeResults" class="analyze-results"></div>
         <p class="pf-note">Paper trading only — virtual money, no real orders are placed.</p>
+      </section>
+    </section>
+
+    <section class="app-page hidden" id="agentsPage">
+      <section class="portfolio-panel agents-page" id="agentsPanel">
+        <div class="panel-head">
+          <h2>Trading agents</h2>
+        </div>
+        <p class="diversify-sub">
+          Create a paper agent, assign a goal and a fixed corpus. When you authorize it, the agent may buy and sell
+          <b>only with that corpus</b> — never your main portfolio cash beyond the assignment.
+          Educational simulation only — not financial advice.
+        </p>
+
+        <form id="agentCreateForm" class="agent-create" novalidate>
+          <h3>New agent</h3>
+          <div class="diversify-controls agent-create-grid">
+            <label>
+              Name
+              <input id="agentName" type="text" maxlength="60" placeholder="Large-cap sprint" required />
+            </label>
+            <label>
+              Goal
+              <input
+                id="agentGoal"
+                type="text"
+                maxlength="200"
+                placeholder="Invest 50000 in large cap; profit 5000 in 2 days"
+                required
+              />
+            </label>
+            <label>
+              Corpus
+              <input id="agentCorpus" type="number" min="100" step="100" value="50000" required />
+            </label>
+            <label>
+              Target profit
+              <input id="agentTargetProfit" type="number" min="1" step="100" value="5000" required />
+            </label>
+            <label>
+              Horizon (days)
+              <input id="agentHorizon" type="number" min="1" max="90" step="1" value="2" required />
+            </label>
+            <label>
+              Market
+              <select id="agentCountry">
+                <option value="US">United States</option>
+                <option value="IN">India</option>
+              </select>
+            </label>
+            <label>
+              Cap focus
+              <select id="agentCapFilter">
+                <option value="large">Large cap</option>
+                <option value="mid">Mid cap</option>
+                <option value="small">Small cap</option>
+                <option value="all">Any cap</option>
+              </select>
+            </label>
+            <label>
+              Max positions
+              <input id="agentMaxPos" type="number" min="1" max="12" step="1" value="5" />
+            </label>
+          </div>
+          <label class="diversify-check agent-auth-check">
+            <input type="checkbox" id="agentAuthorize" checked />
+            Authorize this agent to buy &amp; sell using only the assigned corpus
+          </label>
+          <div class="agent-create-actions">
+            <button type="submit" class="mini-btn primary" id="agentCreateBtn">Create agent</button>
+          </div>
+          <div id="agentCreateError" class="auth-error hidden"></div>
+        </form>
+
+        <div id="agentsMeta" class="diversify-meta"></div>
+        <div id="agentsList" class="agents-list"></div>
+        <p class="pf-note">
+          Agents trade a separate paper book. Goals like a 10% profit in 2 days are aggressive and often unmet —
+          treat results as education, not a promise.
+        </p>
       </section>
     </section>
 
