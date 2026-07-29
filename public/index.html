@@ -835,9 +835,21 @@
             Connect with your client ID, API secret, and a one-time auth code.
           </p>
           <ol class="broker-steps">
-            <li>In <a href="https://trade.shoonya.com/" target="_blank" rel="noopener">trade.shoonya.com</a> → profile → API Key: copy the <b>secret code</b> and whitelist this machine’s public IP.</li>
-            <li>Enter User ID + secret below, click <b>Get auth code</b>, log in on Shoonya’s page.</li>
-            <li>Copy the <code>code=...</code> from the browser address bar (or paste the whole URL), then Connect.</li>
+            <li>
+              On Shoonya <b>Api Key Generation</b>:
+              Client Id is <code>FA404926_U</code> (already correct).
+              Click the eye icon, copy <b>Secret Code</b>.
+            </li>
+            <li>
+              Set <b>URL</b> to your Pulse callback, e.g.
+              <code>http://localhost:3000/shoonya-callback.html</code>
+              (or your public Pulse URL + <code>/shoonya-callback.html</code>).
+            </li>
+            <li>
+              Set <b>Primary IP Address</b> to this PC’s public IP, then click <b>Update</b>.
+              (Find IP at <a href="https://api.ipify.org" target="_blank" rel="noopener">api.ipify.org</a>.)
+            </li>
+            <li>Enter User ID + secret below → <b>Get auth code</b> → authorize → copy code into Pulse → Connect.</li>
           </ol>
           <div id="shoonyaStatus" class="broker-status">Not connected</div>
           <form id="shoonyaConnectForm" class="auth-form">
