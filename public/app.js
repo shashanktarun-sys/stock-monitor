@@ -971,6 +971,129 @@ function matchesAgentCap(q, capFilter) {
   return (q.capBucket || "") === capFilter;
 }
 
+function normalCdf(x) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989423 * Math.exp((-x * x) / 2);
+  let p =
+    d *
+    t *
+    (0.3193815 +
+      t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  if (x > 0) p = 1 - p;
+  return Math.max(0, Math.min(1, p));
+}
+
+function estimateQuoteDistribution(q) {
+  const candles = q?.candles || [];
+  if (!candles || candles.length < 12) return null;
+  const closes = candles.map((c) => Number(c.close)).filter((x) => x > 0);
+  if (closes.length < 12) return null;
+  const returns = [];
+  for (let i = 1; i < closes.length; i++) {
+    returns.push(Math.log(closes[i] / closes[i - 1]));
+  }
+  if (returns.length < 10) return null;
+  const mean = returns.reduce((s, x) => s + x, 0) / returns.length;
+  const variance =
+    returns.reduce((s, x) => s + (x - mean) ** 2, 0) / Math.max(1, returns.length - 1);
+  const stdev = Math.sqrt(Math.max(variance, 1e-8));
+  const scoreAdj = ((q.analysis?.score || 0) / 100) * 0.0012;
+  const reco = q.analysis?.recommendation || "";
+  const recoAdj =
+    reco === "STRONG BUY"
+      ? 0.0008
+      : reco === "BUY"
+        ? 0.00035
+        : reco === "SELL"
+          ? -0.00035
+          : reco === "STRONG SELL"
+            ? -0.0008
+            : 0;
+  const capAdj =
+    q.capBucket === "large"
+      ? -0.00005
+      : q.capBucket === "small"
+        ? 0.0001
+        : 0;
+  return {
+    muDaily: mean + scoreAdj + recoAdj + capAdj,
+    sigmaDaily: stdev,
+  };
+}
+
+function estimateAgentGoal(agent, preloadedQuotes = null) {
+  const quotes = preloadedQuotes || state.quotes || {};
+  const stress = assessMarketStress(agent.country);
+  const stressPenalty =
+    stress.level === "crash" ? -0.0035 : stress.level === "risk_off" ? -0.0015 : 0;
+  const daysLeft = Math.max(
+    1,
+    Math.ceil(Math.max(0, (agent.deadlineAt - Date.now()) / 86400000))
+  );
+
+  const heldSymbols = Object.keys(agent.positions || {});
+  let candidates = heldSymbols
+    .map((sym) => quotes[sym])
+    .filter(Boolean);
+
+  if (!candidates.length) {
+    candidates = Object.values(quotes)
+      .filter(
+        (q) =>
+          q?.analysis &&
+          assetCountry(q.symbol, q.currency) === agent.country &&
+          matchesAgentCap(q, agent.capFilter) &&
+          ["BUY", "STRONG BUY", "HOLD"].includes(q.analysis.recommendation || "")
+      )
+      .sort((a, b) => (b.analysis?.score || 0) - (a.analysis?.score || 0))
+      .slice(0, Math.max(2, agent.maxPositions));
+  }
+
+  const dists = candidates.map(estimateQuoteDistribution).filter(Boolean);
+  if (!dists.length) {
+    return {
+      probabilityPct: null,
+      suggestedProfit: Math.max(0, Math.round(agent.corpus * 0.01)),
+      confidence: "low",
+      note: "Need more recent quote history to model this goal.",
+    };
+  }
+
+  const w = 1 / dists.length;
+  const muDaily = dists.reduce((s, d) => s + d.muDaily * w, 0) + stressPenalty;
+  const sigmaDaily = Math.sqrt(
+    dists.reduce((s, d) => s + (d.sigmaDaily * w) ** 2, 0)
+  );
+  const meanH = muDaily * daysLeft;
+  const sigmaH = Math.max(0.0001, sigmaDaily * Math.sqrt(daysLeft));
+  const targetRet = agent.targetProfit / Math.max(1, agent.corpus);
+  const z = (targetRet - meanH) / sigmaH;
+  const probability = 1 - normalCdf(z);
+
+  // "Higher probability" target uses about 60% modeled odds.
+  const likelyRet60 = meanH - 0.253 * sigmaH;
+  const likelyRet70 = meanH - 0.524 * sigmaH;
+  const suggestedRet = Math.max(0, Math.min(likelyRet60, 0.25));
+  const stretchRet = Math.max(0, Math.min(likelyRet70, 0.2));
+  const suggestedProfit = Math.round(agent.corpus * suggestedRet);
+  const stretchProfit = Math.round(agent.corpus * stretchRet);
+
+  const confidence =
+    dists.length >= Math.max(2, Math.min(agent.maxPositions, 4)) ? "medium" : "low";
+  let note = `${daysLeft}d modeled horizon · based on recent volatility and Pulse trend.`;
+  if (stress.level === "crash" || stress.level === "risk_off") {
+    note += ` ${stress.label.toLowerCase()} lowers odds.`;
+  }
+
+  return {
+    probabilityPct: Math.round(Math.max(0, Math.min(99, probability * 100))),
+    suggestedProfit,
+    stretchProfit,
+    confidence,
+    note,
+  };
+}
+
 function createAgentFromForm() {
   const name = String(el.agentName?.value || "").trim().slice(0, 60);
   const goal = String(el.agentGoal?.value || "").trim().slice(0, 200);
@@ -1270,6 +1393,7 @@ function renderAgents() {
       const cur = agentCurrency(a.country);
       const pnl = agentPnl(a);
       const equity = agentEquity(a);
+      const goalModel = estimateAgentGoal(a);
       const progress = Math.max(0, Math.min(100, (pnl / Math.max(1, a.targetProfit)) * 100));
       const leftMs = a.deadlineAt - Date.now();
       const leftLabel =
@@ -1308,9 +1432,25 @@ function renderAgents() {
           <div><span class="label">P&amp;L</span><b class="${pnl >= 0 ? "up" : "down"}">${money(pnl, cur)}</b></div>
           <div><span class="label">Target</span><b>${money(a.targetProfit, cur)}</b></div>
           <div><span class="label">Horizon</span><b>${leftLabel}</b></div>
+          <div><span class="label">Goal odds</span><b>${goalModel.probabilityPct == null ? "Estimating…" : `${goalModel.probabilityPct}%`}</b></div>
+          <div><span class="label">Likely target</span><b>${money(goalModel.suggestedProfit || 0, cur)}</b></div>
         </div>
         <div class="agent-progress" title="Progress to profit target">
           <div class="agent-progress-bar" style="width:${progress}%"></div>
+        </div>
+        <div class="agent-feasibility">
+          <div class="agent-feasibility-main">
+            ${goalModel.probabilityPct == null
+              ? `Need more quote history for a stronger estimate.`
+              : `Modeled chance to hit <b>${money(a.targetProfit, cur)}</b> in ${a.horizonDays}d: <b>${goalModel.probabilityPct}%</b>.`}
+          </div>
+          <div class="agent-feasibility-sub">
+            Higher-probability gain target: <b>${money(goalModel.suggestedProfit || 0, cur)}</b>${
+              goalModel.stretchProfit
+                ? ` · stretch target <b>${money(goalModel.stretchProfit, cur)}</b>`
+                : ""
+            } · ${goalModel.note}
+          </div>
         </div>
         <p class="agent-meta-line">${a.country} · ${a.capFilter} cap · max ${a.maxPositions} positions · ${a.authorized ? "authorized" : "not authorized"}</p>
         ${holdings ? `<ul class="agent-holdings">${holdings}</ul>` : `<p class="agent-meta-line">No holdings yet</p>`}

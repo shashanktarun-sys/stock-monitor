@@ -3026,6 +3026,23 @@ body {
   background: linear-gradient(90deg, var(--accent), var(--green));
   border-radius: inherit;
 }
+.agent-feasibility {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(79, 124, 255, 0.28);
+  background: rgba(79, 124, 255, 0.08);
+}
+.agent-feasibility-main {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.agent-feasibility-sub {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
 .agent-meta-line {
   margin: 0 0 8px;
   font-size: 12.5px;
