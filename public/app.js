@@ -68,9 +68,59 @@ function saveSignalAlerts() {
   localStorage.setItem(storageKey("signalAlerts"), JSON.stringify(state.signalAlerts));
 }
 
-function buyStock(symbol, qty, price, currency, name, signal, industryInfo, opts) {
+function applyPortfolioFromServer(portfolio) {
+  if (!portfolio) return;
+  state.portfolio = {
+    positions: portfolio.positions || {},
+    trades: portfolio.trades || [],
+    realized: portfolio.realized || {},
+  };
+  localStorage.setItem(storageKey("portfolio"), JSON.stringify(state.portfolio));
+}
+
+async function placeServerOrder(payload) {
+  const r = await fetch("/api/orders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const json = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(json.error || "Order failed");
+    err.status = r.status;
+    throw err;
+  }
+  if (json.portfolio) applyPortfolioFromServer(json.portfolio);
+  return json;
+}
+
+async function buyStock(symbol, qty, price, currency, name, signal, industryInfo, opts) {
   qty = Math.floor(qty);
-  if (!(qty > 0) || !(price > 0)) return;
+  if (!(qty > 0) || !(price > 0)) return null;
+
+  if (currentUser) {
+    try {
+      const result = await placeServerOrder({
+        symbol,
+        side: "buy",
+        qty,
+        price,
+        currency,
+        name,
+        signal,
+        industryInfo,
+        opts,
+        venue: "paper",
+      });
+      delete state.signalAlerts[symbol];
+      saveSignalAlerts();
+      return result.fill || { qty, price, currency };
+    } catch (err) {
+      showTradeToast(err.message || "Buy failed");
+      return null;
+    }
+  }
+
   const p = state.portfolio;
   const pos = p.positions[symbol] || { qty: 0, avgCost: 0, currency, name };
   const newQty = pos.qty + qty;
@@ -78,7 +128,6 @@ function buyStock(symbol, qty, price, currency, name, signal, industryInfo, opts
   pos.qty = newQty;
   pos.currency = currency;
   pos.name = name || pos.name || symbol;
-  // Remember the Pulse signal at the time of the (latest) buy.
   if (signal && signal.recommendation) {
     pos.buySignal = signal.recommendation;
     pos.buyScore = signal.score;
@@ -111,9 +160,41 @@ function buyStock(symbol, qty, price, currency, name, signal, industryInfo, opts
   delete state.signalAlerts[symbol];
   savePortfolio();
   saveSignalAlerts();
+  return { qty, price, currency };
 }
 
-function sellStock(symbol, qty, price, currency, signal) {
+async function sellStock(symbol, qty, price, currency, signal) {
+  if (currentUser) {
+    const pos = state.portfolio.positions[symbol];
+    if (!pos) return null;
+    qty = Math.min(Math.floor(qty), pos.qty);
+    if (!(qty > 0)) return null;
+    try {
+      const result = await placeServerOrder({
+        symbol,
+        side: "sell",
+        qty,
+        price,
+        currency,
+        signal,
+        venue: "paper",
+      });
+      if (!state.portfolio.positions[symbol]) delete state.signalAlerts[symbol];
+      saveSignalAlerts();
+      return (
+        result.fill || {
+          realized: result.fill?.realized,
+          currency,
+          qty,
+          price,
+        }
+      );
+    } catch (err) {
+      showTradeToast(err.message || "Sell failed");
+      return null;
+    }
+  }
+
   const p = state.portfolio;
   const pos = p.positions[symbol];
   if (!pos) return null;
@@ -2266,7 +2347,7 @@ function renderDiversifyPlan(plan) {
   });
 }
 
-function buyDiversifyRow(symbol) {
+async function buyDiversifyRow(symbol) {
   if (
     diversifyPlan?.stress &&
     isStressBlockingBuys(diversifyPlan.stress, !!el.diversifyAllowCrashBuys?.checked)
@@ -2293,7 +2374,7 @@ function buyDiversifyRow(symbol) {
     ? { recommendation: q.analysis.recommendation, score: q.analysis.score }
     : null;
   const basketId = diversifyPlan.basketId || (diversifyPlan.basketId = "b" + Date.now());
-  buyStock(
+  const filled = await buyStock(
     symbol,
     row.qty,
     q.price,
@@ -2307,9 +2388,10 @@ function buyDiversifyRow(symbol) {
     },
     { source: "basket", basketId }
   );
+  if (!filled) return;
   afterTrade(q, "buy", sig, {
-    qty: row.qty,
-    price: q.price,
+    qty: filled.qty || row.qty,
+    price: filled.price || q.price,
     currency: q.currency,
     source: "basket",
   });
@@ -2319,7 +2401,7 @@ function buyDiversifyRow(symbol) {
   renderDiversifyPlan(diversifyPlan);
 }
 
-function buyDiversifyAll() {
+async function buyDiversifyAll() {
   if (!diversifyPlan?.rows?.length) return;
   if (
     diversifyPlan.stress &&
@@ -2348,7 +2430,7 @@ function buyDiversifyAll() {
     const sig = q.analysis
       ? { recommendation: q.analysis.recommendation, score: q.analysis.score }
       : null;
-    buyStock(
+    const filled = await buyStock(
       row.symbol,
       row.qty,
       q.price,
@@ -2362,7 +2444,7 @@ function buyDiversifyAll() {
       },
       { source: "basket", basketId }
     );
-    bought += 1;
+    if (filled) bought += 1;
   }
   if (bought) {
     renderPortfolio();
@@ -3512,7 +3594,7 @@ function renderAnalyzePlan(plan) {
   });
 }
 
-function applyAnalyzeSuggestion(idx) {
+async function applyAnalyzeSuggestion(idx) {
   const s = analyzePlan?.suggestions?.[idx];
   if (!s) return;
   const q = state.quotes[s.symbol];
@@ -3525,7 +3607,7 @@ function applyAnalyzeSuggestion(idx) {
     : null;
 
   if (s.type === "sell" || s.type === "trim") {
-    const result = sellStock(s.symbol, s.qty, q.price, q.currency || s.currency, sig);
+    const result = await sellStock(s.symbol, s.qty, q.price, q.currency || s.currency, sig);
     if (!result) return;
     afterTrade(q, "sell", sig, result);
     showTradeToast(
@@ -3537,7 +3619,7 @@ function applyAnalyzeSuggestion(idx) {
       return;
     }
     if (!confirmCrashBuyIfNeeded("analyze")) return;
-    buyStock(
+    const filled = await buyStock(
       s.symbol,
       s.qty,
       q.price,
@@ -3551,7 +3633,12 @@ function applyAnalyzeSuggestion(idx) {
       },
       { source: "analyze" }
     );
-    afterTrade(q, "buy", sig, { qty: s.qty, price: q.price, currency: q.currency });
+    if (!filled) return;
+    afterTrade(q, "buy", sig, {
+      qty: filled.qty || s.qty,
+      price: filled.price || q.price,
+      currency: q.currency,
+    });
   } else {
     return;
   }
@@ -4111,21 +4198,31 @@ function wireTradeControls(q) {
     ? { recommendation: q.analysis.recommendation, score: q.analysis.score }
     : null;
 
-  buyBtn.addEventListener("click", () => {
+  buyBtn.addEventListener("click", async () => {
     const qty = Math.floor(Number(qtyEl.value) || 0);
     if (qty <= 0) return;
-    buyStock(q.symbol, qty, q.price, q.currency, q.name, sig, {
-      industry: q.industry || null,
-      sector: q.sector || null,
-      capLabel: q.capLabel || null,
-    });
-    afterTrade(q, "buy", sig, { qty, price: q.price, currency: q.currency });
+    buyBtn.disabled = true;
+    try {
+      const filled = await buyStock(q.symbol, qty, q.price, q.currency, q.name, sig, {
+        industry: q.industry || null,
+        sector: q.sector || null,
+        capLabel: q.capLabel || null,
+      });
+      if (filled) afterTrade(q, "buy", sig, { qty: filled.qty || qty, price: filled.price || q.price, currency: q.currency });
+    } finally {
+      buyBtn.disabled = false;
+    }
   });
-  sellBtn.addEventListener("click", () => {
+  sellBtn.addEventListener("click", async () => {
     const qty = Math.floor(Number(qtyEl.value) || 0);
     if (qty <= 0) return;
-    const result = sellStock(q.symbol, qty, q.price, q.currency, sig);
-    afterTrade(q, "sell", sig, result);
+    sellBtn.disabled = true;
+    try {
+      const result = await sellStock(q.symbol, qty, q.price, q.currency, sig);
+      if (result) afterTrade(q, "sell", sig, result);
+    } finally {
+      sellBtn.disabled = false;
+    }
   });
 }
 

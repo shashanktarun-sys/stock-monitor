@@ -77,9 +77,20 @@ deploys as **pulse-stock-pal** on the free plan.
    **https://pulse-stock-pal.onrender.com**
 
 Notes:
-- Free Render services **sleep after ~15 minutes** of no traffic; the first request after sleep can take ~30–60s.
-- Disk is ephemeral — accounts in `data/` (or `PULSE_DATA_DIR`) **do not carry over from your PC**, and reset when the free service redeploys. Use **Sign up** on the public URL, or **Continue as guest**. For durable accounts, attach a Render disk and set `PULSE_DATA_DIR` to its mount path.
+- Free Render web services **sleep after ~15 minutes** of no traffic; the first request after sleep can take ~30–60s.
+- **Durable accounts:** set `DATABASE_URL` to a Postgres instance (Render Blueprint creates `pulse-db`, or use [Neon](https://neon.tech) / any Postgres). Without it, auth falls back to local `data/` files which **reset on free-host redeploys**.
+- Trading stays **paper-only** (`EXECUTION_MODE=paper`). Signed-in buys/sells go through `POST /api/orders` → PaperBroker. Live broker adapters can plug in later — see [docs/BROKER_ADAPTER.md](docs/BROKER_ADAPTER.md).
 - Optional: set `GOOGLE_CLIENT_ID` and SMTP env vars in the Render dashboard for Google login and real OTP emails (without SMTP, signup/reset still works and shows the OTP on screen).
+
+## Persistence
+
+| Mode | When | Stores |
+|------|------|--------|
+| Postgres | `DATABASE_URL` set | users, sessions, userdata JSONB, paper positions/trades, orders, broker_connections |
+| File | no `DATABASE_URL` | `data/users.json`, `data/sessions.json`, `data/userdata/*.json` |
+
+On first Postgres boot, existing `data/users.json` + userdata files are imported if the DB is empty.
+
 ## Use it on your iPhone (installable PWA)
 
 Pulse is a **Progressive Web App**, so you can add it to your iPhone Home Screen
@@ -111,14 +122,15 @@ experience today. If you later have a Mac, the same web app can be wrapped with
 
 Users can **create an account with an email + password**. On signup the server
 generates a **6-digit one-time code**, emails it, and the account is only
-activated after the code is verified. Passwords are hashed with `scrypt` and
-accounts are stored in `data/users.json` (gitignored). Sessions use an HttpOnly
-`sid` cookie.
+activated after the code is verified. Passwords are hashed with `scrypt`.
+Accounts / sessions / synced data live in **Postgres** when `DATABASE_URL` is set,
+otherwise under `data/` (gitignored). Sessions use an HttpOnly `sid` cookie.
 
 **Cloud sync:** when signed in, your **watchlists, paper portfolio, chart
-settings, and market preference** are stored on the server under
-`data/userdata/` and restored on the next login — including from another
-browser or device. Guests still use browser `localStorage` only.
+settings, and market preference** are stored on the server and restored on the
+next login — including from another browser or device. Guests still use browser
+`localStorage` only. Signed-in **buy/sell** goes through `POST /api/orders`
+(paper venue); guests keep local paper fills.
 
 ### Email delivery (SMTP)
 

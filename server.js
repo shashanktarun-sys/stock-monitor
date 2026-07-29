@@ -4,6 +4,26 @@ import path from "node:path";
 import crypto from "node:crypto";
 import tls from "node:tls";
 import { fileURLToPath } from "node:url";
+import {
+  initStore,
+  storageMode,
+  getUserByEmail,
+  upsertEmailUser,
+  updateUserName,
+  updateUserPassword,
+  upsertGoogleUser,
+  createSession,
+  getSessionById,
+  deleteSession,
+  touchSessionUser,
+  setOtp,
+  getOtp,
+  clearOtp,
+  loadUserData,
+  saveUserData,
+  ensureBrokerConnectionStub,
+} from "./lib/store.js";
+import { createExecutionRouter, EXECUTION_MODE, VENUES } from "./brokers/router.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -27,8 +47,14 @@ const EMAIL_ENABLED = Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
 const ON_EPHEMERAL_HOST = Boolean(
   process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.FLY_APP_NAME
 );
-/* Free hosts wipe local disk on redeploy unless PULSE_DATA_DIR points at a disk. */
-const EPHEMERAL_AUTH = ON_EPHEMERAL_HOST && !process.env.PULSE_DATA_DIR;
+/* Free hosts wipe local disk unless Postgres or a persistent data dir is configured. */
+function ephemeralAuth() {
+  return (
+    ON_EPHEMERAL_HOST &&
+    !process.env.PULSE_DATA_DIR &&
+    !String(process.env.DATABASE_URL || "").trim()
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Yahoo Finance data fetching (live source)                                 */
@@ -1805,8 +1831,6 @@ function analyze(candles) {
 /*  Google authentication                                                     */
 /* -------------------------------------------------------------------------- */
 
-// In-memory session store (sessionId -> { user, ts }). Cleared on restart.
-const sessions = new Map();
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const COOKIE_SECURE =
   process.env.NODE_ENV === "production" ||
@@ -1852,20 +1876,14 @@ function readJsonBody(req) {
   });
 }
 
-function getSession(req) {
+async function getSession(req) {
   const sid = parseCookies(req).sid;
   if (!sid) return null;
-  const s = sessions.get(sid);
-  if (!s) return null;
-  if (Date.now() - s.ts > SESSION_TTL_MS) {
-    sessions.delete(sid);
-    return null;
-  }
-  return { sid, entry: s };
+  return getSessionById(sid);
 }
 
-function getSessionUser(req) {
-  const sess = getSession(req);
+async function getSessionUser(req) {
+  const sess = await getSession(req);
   return sess ? sess.entry.user : null;
 }
 
@@ -1891,115 +1909,9 @@ async function verifyGoogleCredential(credential) {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Email + password accounts (with email OTP verification)                   */
+/*  Email + password helpers                                                  */
 /* -------------------------------------------------------------------------- */
 
-const DATA_DIR = path.resolve(
-  process.env.PULSE_DATA_DIR || path.join(__dirname, "data")
-);
-const USERS_FILE = path.join(DATA_DIR, "users.json");
-
-// Persistent user store: email(lowercase) -> { id, email, name, salt, hash, verified, createdAt }
-let users = {};
-try {
-  users = JSON.parse(fs.readFileSync(USERS_FILE, "utf8")) || {};
-} catch {
-  users = {};
-}
-function saveUsers() {
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-  } catch (e) {
-    console.error("Failed to save users:", e.message);
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Per-user synced app data (portfolio, watchlists, prefs)                   */
-/* -------------------------------------------------------------------------- */
-
-const USERDATA_DIR = path.join(DATA_DIR, "userdata");
-
-function userDataPath(sub) {
-  // Safe filename from session sub (email:uuid or google numeric id).
-  const safe = String(sub || "unknown").replace(/[^a-zA-Z0-9._-]+/g, "_");
-  return path.join(USERDATA_DIR, safe + ".json");
-}
-
-function defaultUserData() {
-  return {
-    country: "US",
-    watchlists: { US: null, IN: null }, // null => client uses defaults
-    portfolio: { positions: {}, trades: [], realized: {} },
-    chartConfig: null,
-    moversUniverse: { US: null, IN: null },
-    updatedAt: null,
-  };
-}
-
-function loadUserData(sub) {
-  try {
-    const raw = JSON.parse(fs.readFileSync(userDataPath(sub), "utf8"));
-    if (!raw || typeof raw !== "object") return defaultUserData();
-    const base = defaultUserData();
-    return {
-      country: raw.country === "IN" || raw.country === "US" ? raw.country : base.country,
-      watchlists: {
-        US: Array.isArray(raw.watchlists?.US) ? raw.watchlists.US : null,
-        IN: Array.isArray(raw.watchlists?.IN) ? raw.watchlists.IN : null,
-      },
-      portfolio: {
-        positions: raw.portfolio?.positions || {},
-        trades: Array.isArray(raw.portfolio?.trades) ? raw.portfolio.trades : [],
-        realized: raw.portfolio?.realized || {},
-      },
-      chartConfig: raw.chartConfig || null,
-      moversUniverse: {
-        US: Array.isArray(raw.moversUniverse?.US) ? raw.moversUniverse.US : null,
-        IN: Array.isArray(raw.moversUniverse?.IN) ? raw.moversUniverse.IN : null,
-      },
-      updatedAt: raw.updatedAt || null,
-    };
-  } catch {
-    return defaultUserData();
-  }
-}
-
-function saveUserData(sub, data) {
-  fs.mkdirSync(USERDATA_DIR, { recursive: true });
-  const cleaned = {
-    country: data.country === "IN" || data.country === "US" ? data.country : "US",
-    watchlists: {
-      US: Array.isArray(data.watchlists?.US) ? data.watchlists.US.slice(0, 100) : null,
-      IN: Array.isArray(data.watchlists?.IN) ? data.watchlists.IN.slice(0, 100) : null,
-    },
-    portfolio: {
-      positions: data.portfolio?.positions || {},
-      trades: Array.isArray(data.portfolio?.trades)
-        ? data.portfolio.trades.slice(0, 500)
-        : [],
-      realized: data.portfolio?.realized || {},
-    },
-    chartConfig: data.chartConfig || null,
-    moversUniverse: {
-      US: Array.isArray(data.moversUniverse?.US)
-        ? data.moversUniverse.US.slice(0, 40)
-        : null,
-      IN: Array.isArray(data.moversUniverse?.IN)
-        ? data.moversUniverse.IN.slice(0, 40)
-        : null,
-    },
-    updatedAt: Date.now(),
-  };
-  fs.writeFileSync(userDataPath(sub), JSON.stringify(cleaned, null, 2));
-  return cleaned;
-}
-
-// Pending signups awaiting OTP: email -> { name, email, salt, hash, code, expires, sentAt, attempts }
-const pendingSignups = new Map();
-// Pending password resets: email -> { code, expires, sentAt, attempts }
-const pendingResets = new Map();
 const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const RESEND_COOLDOWN_MS = 30 * 1000;
 
@@ -2033,6 +1945,18 @@ function sessionUserFromRecord(u) {
     picture: "",
     provider: "email",
     createdAt: u.createdAt || null,
+  };
+}
+
+let executionRouter = null;
+
+async function resolveOrderPrice(symbol) {
+  const [{ meta, candles }] = await Promise.all([getChart(symbol, "5d", "1d")]);
+    price = meta.regularMarketPrice ?? (candles.length ? candles[candles.length - 1].close : null);
+  return {
+    price,
+    currency: meta.currency || (symbol.endsWith(".NS") || symbol.endsWith(".BO") ? "INR" : "USD"),
+    name: meta.longName || meta.shortName || symbol,
   };
 }
 
@@ -2178,13 +2102,16 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (pathname === "/api/config") {
+      const ephemeral = ephemeralAuth();
       return sendJson(res, 200, {
         googleClientId: GOOGLE_CLIENT_ID || null,
         emailAuth: true,
-        emailDelivery: EMAIL_ENABLED, // false => OTP returned in API (no SMTP)
-        ephemeralAuth: EPHEMERAL_AUTH,
-        authHint: EPHEMERAL_AUTH
-          ? "Accounts on this free public host reset when the server redeploys. Create an account here, or continue as guest. Local PC accounts are separate."
+        emailDelivery: EMAIL_ENABLED,
+        ephemeralAuth: ephemeral,
+        storage: storageMode(),
+        executionMode: EXECUTION_MODE === "live" ? "live" : "paper",
+        authHint: ephemeral
+          ? "Accounts on this free public host reset when the server redeploys. Add DATABASE_URL (Postgres) for durable accounts, or continue as guest."
           : null,
       });
     }
@@ -2207,7 +2134,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === "/api/me") {
-      return sendJson(res, 200, { user: getSessionUser(req) });
+      return sendJson(res, 200, { user: await getSessionUser(req) });
     }
 
     if (pathname === "/api/auth/google" && req.method === "POST") {
@@ -2215,9 +2142,11 @@ const server = http.createServer(async (req, res) => {
       if (!body.credential)
         return sendJson(res, 400, { error: "Missing credential" });
       try {
-        const user = await verifyGoogleCredential(body.credential);
+        const g = await verifyGoogleCredential(body.credential);
+        const user = await upsertGoogleUser(g);
         const sid = crypto.randomUUID();
-        sessions.set(sid, { user, ts: Date.now() });
+        await createSession(sid, user, SESSION_TTL_MS);
+        await ensureBrokerConnectionStub(user.sub, VENUES.PAPER);
         res.setHeader("Set-Cookie", sessionCookie(sid, Math.floor(SESSION_TTL_MS / 1000)));
         return sendJson(res, 200, { user });
       } catch (err) {
@@ -2227,7 +2156,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/auth/logout" && req.method === "POST") {
       const sid = parseCookies(req).sid;
-      if (sid) sessions.delete(sid);
+      if (sid) await deleteSession(sid);
       res.setHeader("Set-Cookie", clearSessionCookie());
       return sendJson(res, 200, { ok: true });
     }
@@ -2242,25 +2171,30 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 400, { error: "Enter a valid email address" });
       if (password.length < 6)
         return sendJson(res, 400, { error: "Password must be at least 6 characters" });
-      if (users[email] && users[email].verified)
+      const existing = await getUserByEmail(email);
+      if (existing && existing.verified)
         return sendJson(res, 409, { error: "An account with this email already exists. Please sign in." });
 
       const { salt, hash } = hashPassword(password);
       const code = genOtp();
-      pendingSignups.set(email, {
-        name,
+      await setOtp(
         email,
-        salt,
-        hash,
-        code,
-        expires: Date.now() + OTP_TTL_MS,
-        sentAt: Date.now(),
-        attempts: 0,
-      });
+        "signup",
+        {
+          name,
+          email,
+          salt,
+          hash,
+          code,
+          sentAt: Date.now(),
+          attempts: 0,
+        },
+        Date.now() + OTP_TTL_MS
+      );
       try {
         await sendOtpEmail(email, code);
       } catch (err) {
-        pendingSignups.delete(email);
+        await clearOtp(email, "signup");
         return sendJson(res, 502, { error: "Could not send verification email: " + err.message });
       }
       return sendJson(res, 200, {
@@ -2274,15 +2208,15 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/auth/resend-otp" && req.method === "POST") {
       const body = await readJsonBody(req);
       const email = normalizeEmail(body.email);
-      const pending = pendingSignups.get(email);
+      const pending = await getOtp(email, "signup");
       if (!pending)
         return sendJson(res, 404, { error: "No pending signup for this email. Please sign up again." });
-      if (Date.now() - pending.sentAt < RESEND_COOLDOWN_MS)
+      if (Date.now() - (pending.sentAt || 0) < RESEND_COOLDOWN_MS)
         return sendJson(res, 429, { error: "Please wait a few seconds before requesting another code." });
       pending.code = genOtp();
-      pending.expires = Date.now() + OTP_TTL_MS;
       pending.sentAt = Date.now();
       pending.attempts = 0;
+      await setOtp(email, "signup", pending, Date.now() + OTP_TTL_MS);
       try {
         await sendOtpEmail(email, pending.code);
       } catch (err) {
@@ -2300,18 +2234,19 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const email = normalizeEmail(body.email);
       const code = String(body.code || "").trim();
-      const pending = pendingSignups.get(email);
+      const pending = await getOtp(email, "signup");
       if (!pending)
         return sendJson(res, 404, { error: "No pending signup. Please sign up again." });
       if (Date.now() > pending.expires) {
-        pendingSignups.delete(email);
+        await clearOtp(email, "signup");
         return sendJson(res, 410, { error: "Code expired. Please request a new one." });
       }
-      if (pending.attempts >= 6) {
-        pendingSignups.delete(email);
+      if ((pending.attempts || 0) >= 6) {
+        await clearOtp(email, "signup");
         return sendJson(res, 429, { error: "Too many attempts. Please sign up again." });
       }
-      pending.attempts++;
+      pending.attempts = (pending.attempts || 0) + 1;
+      await setOtp(email, "signup", pending, pending.expires);
       if (code !== pending.code)
         return sendJson(res, 401, { error: "Incorrect code. Please try again." });
 
@@ -2324,13 +2259,13 @@ const server = http.createServer(async (req, res) => {
         verified: true,
         createdAt: Date.now(),
       };
-      users[email] = user;
-      saveUsers();
-      pendingSignups.delete(email);
+      await upsertEmailUser(user);
+      await clearOtp(email, "signup");
 
       const sid = crypto.randomUUID();
       const sessionUser = sessionUserFromRecord(user);
-      sessions.set(sid, { user: sessionUser, ts: Date.now() });
+      await createSession(sid, sessionUser, SESSION_TTL_MS);
+      await ensureBrokerConnectionStub(sessionUser.sub, VENUES.PAPER);
       res.setHeader("Set-Cookie", sessionCookie(sid, Math.floor(SESSION_TTL_MS / 1000)));
       return sendJson(res, 200, { user: sessionUser });
     }
@@ -2339,34 +2274,35 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const email = normalizeEmail(body.email);
       const password = String(body.password || "");
-      const user = users[email];
+      const user = await getUserByEmail(email);
       if (!user || !user.verified || !verifyPassword(password, user.salt, user.hash))
         return sendJson(res, 401, { error: "Invalid email or password" });
 
       const sid = crypto.randomUUID();
       const sessionUser = sessionUserFromRecord(user);
-      sessions.set(sid, { user: sessionUser, ts: Date.now() });
+      await createSession(sid, sessionUser, SESSION_TTL_MS);
+      await ensureBrokerConnectionStub(sessionUser.sub, VENUES.PAPER);
       res.setHeader("Set-Cookie", sessionCookie(sid, Math.floor(SESSION_TTL_MS / 1000)));
       return sendJson(res, 200, { user: sessionUser });
     }
 
     if (pathname === "/api/profile" && req.method === "POST") {
-      const sess = getSession(req);
+      const sess = await getSession(req);
       if (!sess) return sendJson(res, 401, { error: "Not signed in" });
       const body = await readJsonBody(req);
       const name = String(body.name || "").trim().slice(0, 80);
       if (!name) return sendJson(res, 400, { error: "Name cannot be empty" });
       const u = sess.entry.user;
-      u.name = name; // update the live session copy
-      if (u.provider === "email" && users[u.email]) {
-        users[u.email].name = name;
-        saveUsers();
+      u.name = name;
+      await touchSessionUser(sess.sid, u);
+      if (u.provider === "email" && u.email) {
+        await updateUserName(u.email, name);
       }
       return sendJson(res, 200, { user: u });
     }
 
     if (pathname === "/api/auth/change-password" && req.method === "POST") {
-      const sess = getSession(req);
+      const sess = await getSession(req);
       if (!sess) return sendJson(res, 401, { error: "Not signed in" });
       const u = sess.entry.user;
       if (u.provider !== "email")
@@ -2374,54 +2310,107 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const current = String(body.currentPassword || "");
       const next = String(body.newPassword || "");
-      const rec = users[u.email];
+      const rec = await getUserByEmail(u.email);
       if (!rec || !verifyPassword(current, rec.salt, rec.hash))
         return sendJson(res, 401, { error: "Current password is incorrect" });
       if (next.length < 6)
         return sendJson(res, 400, { error: "New password must be at least 6 characters" });
       const { salt, hash } = hashPassword(next);
-      rec.salt = salt;
-      rec.hash = hash;
-      saveUsers();
+      await updateUserPassword(u.email, salt, hash);
       return sendJson(res, 200, { ok: true });
     }
 
     if (pathname === "/api/userdata" && req.method === "GET") {
-      const user = getSessionUser(req);
+      const user = await getSessionUser(req);
       if (!user) return sendJson(res, 401, { error: "Not signed in" });
-      return sendJson(res, 200, { data: loadUserData(user.sub) });
+      return sendJson(res, 200, { data: await loadUserData(user.sub) });
     }
 
     if (pathname === "/api/userdata" && (req.method === "PUT" || req.method === "POST")) {
-      const user = getSessionUser(req);
+      const user = await getSessionUser(req);
       if (!user) return sendJson(res, 401, { error: "Not signed in" });
       const body = await readJsonBody(req);
-      const saved = saveUserData(user.sub, body.data || body);
+      const saved = await saveUserData(user.sub, body.data || body);
       return sendJson(res, 200, { data: saved });
+    }
+
+    if (pathname === "/api/orders" && req.method === "POST") {
+      const user = await getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      const body = await readJsonBody(req);
+      try {
+        const result = await executionRouter.placeOrder(
+          {
+            userSub: user.sub,
+            symbol: body.symbol,
+            side: body.side,
+            qty: body.qty,
+            orderType: body.orderType || "market",
+            limitPrice: body.limitPrice,
+            clientPrice: body.price ?? body.clientPrice,
+            currency: body.currency,
+            name: body.name,
+            signal: body.signal,
+            industryInfo: body.industryInfo,
+            opts: body.opts,
+          },
+          body.venue || VENUES.PAPER
+        );
+        return sendJson(res, 200, result);
+      } catch (err) {
+        return sendJson(res, err.status || 500, { error: err.message });
+      }
+    }
+
+    if (pathname === "/api/orders" && req.method === "GET") {
+      const user = await getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      return sendJson(res, 200, {
+        orders: await executionRouter.getOrders(user.sub),
+      });
+    }
+
+    if (pathname === "/api/positions" && req.method === "GET") {
+      const user = await getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      return sendJson(res, 200, {
+        positions: await executionRouter.getPositions(user.sub),
+      });
+    }
+
+    if (pathname === "/api/broker/connections" && req.method === "GET") {
+      const user = await getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      await ensureBrokerConnectionStub(user.sub, VENUES.PAPER);
+      return sendJson(res, 200, {
+        executionMode: EXECUTION_MODE === "live" ? "live" : "paper",
+        connections: await executionRouter.listConnections(user.sub),
+        note: "Live brokerage linking is not enabled yet. Trading stays paper-only.",
+      });
     }
 
     if (pathname === "/api/auth/forgot-password" && req.method === "POST") {
       const body = await readJsonBody(req);
       const email = normalizeEmail(body.email);
-      const rec = users[email];
+      const rec = await getUserByEmail(email);
       if (!rec || !rec.verified) {
         return sendJson(res, 404, {
-          error: EPHEMERAL_AUTH
-            ? "No account on this public server with that email. Sign up here first (PC accounts don't carry over), or continue as guest. Free hosting may also wipe accounts after redeploys."
+          error: ephemeralAuth()
+            ? "No account on this public server with that email. Sign up here first (PC accounts don't carry over), or continue as guest. Add DATABASE_URL for durable accounts."
             : "No account found with that email. Create one with Sign up first.",
         });
       }
       const code = genOtp();
-      pendingResets.set(email, {
-        code,
-        expires: Date.now() + OTP_TTL_MS,
-        sentAt: Date.now(),
-        attempts: 0,
-      });
+      await setOtp(
+        email,
+        "reset",
+        { code, sentAt: Date.now(), attempts: 0 },
+        Date.now() + OTP_TTL_MS
+      );
       try {
         await sendOtpEmail(email, code, "reset");
       } catch (err) {
-        pendingResets.delete(email);
+        await clearOtp(email, "reset");
         return sendJson(res, 502, { error: "Could not send reset email: " + err.message });
       }
       return sendJson(res, 200, {
@@ -2440,34 +2429,32 @@ const server = http.createServer(async (req, res) => {
       const email = normalizeEmail(body.email);
       const code = String(body.code || "").trim();
       const newPassword = String(body.newPassword || "");
-      const pending = pendingResets.get(email);
-      const rec = users[email];
+      const pending = await getOtp(email, "reset");
+      const rec = await getUserByEmail(email);
       if (!pending || !rec)
         return sendJson(res, 404, { error: "No reset request found. Please start again." });
       if (Date.now() > pending.expires) {
-        pendingResets.delete(email);
+        await clearOtp(email, "reset");
         return sendJson(res, 410, { error: "Code expired. Please request a new one." });
       }
-      if (pending.attempts >= 6) {
-        pendingResets.delete(email);
+      if ((pending.attempts || 0) >= 6) {
+        await clearOtp(email, "reset");
         return sendJson(res, 429, { error: "Too many attempts. Please start again." });
       }
-      pending.attempts++;
+      pending.attempts = (pending.attempts || 0) + 1;
+      await setOtp(email, "reset", pending, pending.expires);
       if (code !== pending.code)
         return sendJson(res, 401, { error: "Incorrect code. Please try again." });
       if (newPassword.length < 6)
         return sendJson(res, 400, { error: "New password must be at least 6 characters" });
 
       const { salt, hash } = hashPassword(newPassword);
-      rec.salt = salt;
-      rec.hash = hash;
-      saveUsers();
-      pendingResets.delete(email);
+      await updateUserPassword(email, salt, hash);
+      await clearOtp(email, "reset");
 
-      // Log the user straight in after a successful reset.
       const sid = crypto.randomUUID();
       const sessionUser = sessionUserFromRecord(rec);
-      sessions.set(sid, { user: sessionUser, ts: Date.now() });
+      await createSession(sid, sessionUser, SESSION_TTL_MS);
       res.setHeader("Set-Cookie", sessionCookie(sid, Math.floor(SESSION_TTL_MS / 1000)));
       return sendJson(res, 200, { user: sessionUser });
     }
@@ -2533,6 +2520,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Stock monitor running at http://localhost:${PORT}`);
+async function main() {
+  const { mode } = await initStore();
+  executionRouter = createExecutionRouter({ resolvePrice: resolveOrderPrice });
+  console.log(
+    `[pulse] storage=${mode} execution=${EXECUTION_MODE === "live" ? "live" : "paper"}`
+  );
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Stock monitor running at http://localhost:${PORT}`);
+  });
+}
+
+main().catch((err) => {
+  console.error("Failed to start:", err);
+  process.exit(1);
 });
