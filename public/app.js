@@ -63,6 +63,7 @@ function loadAgents() {
 function saveAgents() {
   localStorage.setItem(storageKey("agents"), JSON.stringify(state.agents || []));
   scheduleServerSync();
+  if (state.page === "portfolio") renderPortfolio();
 }
 
 function savePortfolio() {
@@ -666,6 +667,7 @@ const el = {
   moversCancel: document.getElementById("moversCancel"),
   moversMeta: document.getElementById("moversMeta"),
   portfolioSummary: document.getElementById("portfolioSummary"),
+  portfolioAgentsSummary: document.getElementById("portfolioAgentsSummary"),
   portfolioHoldings: document.getElementById("portfolioHoldings"),
   tradeHistory: document.getElementById("tradeHistory"),
   tradeHistoryMeta: document.getElementById("tradeHistoryMeta"),
@@ -903,6 +905,7 @@ function setPage(page, pushHash = true) {
     if (el.agentCountry) el.agentCountry.value = state.country;
     renderAgents();
   }
+  if (state.page === "portfolio") renderPortfolio();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1028,6 +1031,8 @@ function agentBuy(agent, symbol, qty, price, q) {
     currency: q.currency,
     ts: Date.now(),
     agentId: agent.id,
+    agentName: agent.name,
+    source: "agent",
   });
   agent.trades = agent.trades.slice(0, 200);
   return true;
@@ -1052,6 +1057,8 @@ function agentSell(agent, symbol, qty, price) {
     realized,
     ts: Date.now(),
     agentId: agent.id,
+    agentName: agent.name,
+    source: "agent",
   });
   agent.trades = agent.trades.slice(0, 200);
   if (pos.qty <= 0) delete agent.positions[symbol];
@@ -1221,6 +1228,7 @@ async function runAgentOnce(agentId) {
 
   saveAgents();
   renderAgents();
+  if (state.page === "portfolio") renderPortfolio();
 }
 
 function renderAgents() {
@@ -3098,6 +3106,181 @@ async function generateDiversifyBasket() {
   }
 }
 
+function collectAgentPortfolioView(countryFilter) {
+  const agents = state.agents || [];
+  const matchCountry = (symbol, currency) =>
+    countryFilter === "ALL" || assetCountry(symbol, currency) === countryFilter;
+
+  const summaries = [];
+  const holdings = [];
+  const trades = [];
+
+  for (const agent of agents) {
+    if (countryFilter !== "ALL" && agent.country !== countryFilter) {
+      // Still include trades/positions that match filter even if agent.country differs
+    }
+    const cur = agentCurrency(agent.country);
+    const posEntries = Object.entries(agent.positions || {}).filter(([sym, pos]) =>
+      matchCountry(sym, pos.currency || cur)
+    );
+    const agentTrades = (agent.trades || [])
+      .filter((t) => matchCountry(t.symbol, t.currency || cur))
+      .map((t) => ({
+        ...t,
+        source: "agent",
+        agentId: agent.id,
+        agentName: t.agentName || agent.name,
+      }));
+
+    let invested = 0;
+    let value = 0;
+    for (const [sym, pos] of posEntries) {
+      const price = state.quotes[sym]?.price ?? pos.avgCost;
+      invested += pos.qty * pos.avgCost;
+      value += pos.qty * price;
+      holdings.push({
+        agentId: agent.id,
+        agentName: agent.name,
+        agentStatus: agent.status,
+        symbol: sym,
+        pos,
+        price,
+        currency: pos.currency || cur,
+      });
+    }
+
+    const equity = (agent.cash || 0) + Object.entries(agent.positions || {}).reduce((s, [sym, pos]) => {
+      const price = state.quotes[sym]?.price ?? pos.avgCost;
+      return s + pos.qty * price;
+    }, 0);
+    const pnl = equity - (agent.corpus || 0);
+
+    if (
+      posEntries.length ||
+      agentTrades.length ||
+      countryFilter === "ALL" ||
+      agent.country === countryFilter
+    ) {
+      summaries.push({
+        agent,
+        currency: cur,
+        invested,
+        value,
+        cash: agent.cash || 0,
+        equity,
+        pnl,
+        holdings: posEntries.length,
+        tradeCount: (agent.trades || []).length,
+      });
+    }
+
+    trades.push(...agentTrades);
+  }
+
+  return { summaries, holdings, trades };
+}
+
+function renderAgentPortfolioSummary(countryFilter) {
+  if (!el.portfolioAgentsSummary) return;
+  const { summaries, holdings } = collectAgentPortfolioView(countryFilter);
+  if (!summaries.length) {
+    el.portfolioAgentsSummary.innerHTML = "";
+    return;
+  }
+
+  const cards = summaries
+    .map(({ agent, currency, invested, value, cash, equity, pnl, holdings: holdN }) => {
+      const progress = Math.max(
+        0,
+        Math.min(100, (pnl / Math.max(1, agent.targetProfit)) * 100)
+      );
+      return `<div class="pf-card agent-pf-card">
+        <div class="pf-ccy">
+          🤖 ${agent.name}
+          <span class="agent-status status-${agent.status}">${agent.status}</span>
+        </div>
+        <p class="agent-pf-goal">${agent.goal || ""}</p>
+        <div class="pf-metrics">
+          ${pfMetric("Corpus", money(agent.corpus, currency))}
+          ${pfMetric("Cash", money(cash, currency))}
+          ${pfMetric("Invested", money(invested, currency))}
+          ${pfMetric("Market value", money(value, currency))}
+          ${pfMetric("Equity", money(equity, currency))}
+          ${pfMetric(
+            "Agent P&L",
+            signedMoney(pnl, currency),
+            pnl >= 0 ? "up" : "down"
+          )}
+          ${pfMetric("Target", money(agent.targetProfit, currency))}
+          ${pfMetric("Holdings", String(holdN))}
+        </div>
+        <div class="agent-progress" title="Progress to profit target">
+          <div class="agent-progress-bar" style="width:${progress}%"></div>
+        </div>
+      </div>`;
+    })
+    .join("");
+
+  const holdingRows = holdings
+    .map(({ agentName, symbol, pos, price, currency }) => {
+      const invested = pos.qty * pos.avgCost;
+      const value = pos.qty * price;
+      const upl = value - invested;
+      const uplPct = invested ? (upl / invested) * 100 : 0;
+      const cls = upl >= 0 ? "up" : "down";
+      return `<div class="pf-holding agent-holding">
+        <div class="pfh-main">
+          <div class="pfh-sym">${symbol.replace(".NS", "")}<span class="basket-tag agent-tag" title="Held by trading agent">Agent · ${agentName}</span></div>
+          <div class="pfh-name">${pos.name || ""}</div>
+        </div>
+        <div class="pfh-cell"><span>Qty</span>${pos.qty}</div>
+        <div class="pfh-cell"><span>Avg</span>${money(pos.avgCost, currency)}</div>
+        <div class="pfh-cell"><span>Last</span>${money(price, currency)}</div>
+        <div class="pfh-cell pnl ${cls}"><span>P&L</span>${signedMoney(upl, currency)}<br><small>${signedPct(uplPct)}</small></div>
+        <button class="mini-btn pfh-open" data-symbol="${symbol}">View</button>
+      </div>`;
+    })
+    .join("");
+
+  el.portfolioAgentsSummary.innerHTML = `
+    <div class="agent-pf-section-head">
+      <h3>Agent portfolios</h3>
+      <button type="button" class="ghost-btn small" id="portfolioGotoAgents">Manage agents</button>
+    </div>
+    <div class="portfolio-summary agent-pf-cards">${cards}</div>
+    ${
+      holdingRows
+        ? `<div class="agent-pf-holdings-label">Agent holdings</div><div class="portfolio-holdings">${holdingRows}</div>`
+        : `<div class="pf-empty">Agents have no open holdings yet.</div>`
+    }`;
+
+  el.portfolioAgentsSummary.querySelector("#portfolioGotoAgents")?.addEventListener("click", () =>
+    setPage("agents")
+  );
+  el.portfolioAgentsSummary.querySelectorAll(".pfh-open").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      selectSymbol(btn.dataset.symbol);
+      setPage("market");
+      el.detailContent?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+}
+
+function tradeSourceBadge(t) {
+  if (t.source === "agent" || t.agentId) {
+    const name = t.agentName ? ` · ${t.agentName}` : "";
+    return `<span class="basket-tag agent-tag" title="Placed by a trading agent">Agent trade${name}</span>`;
+  }
+  if (t.source === "basket") {
+    return `<span class="basket-tag" title="Bought via Diversify basket">Basket buy</span>`;
+  }
+  if (t.source === "analyze") {
+    return `<span class="basket-tag analyze-tag" title="Bought from Portfolio analyzer">Analyzer buy</span>`;
+  }
+  return "";
+}
+
 function renderPortfolio() {
   renderTraderClassification();
   syncPnlPeriodUI();
@@ -3114,6 +3297,7 @@ function renderPortfolio() {
   const filteredTrades = (p.trades || []).filter((t) =>
     matchCountry(t.symbol, t.currency)
   );
+  const agentView = collectAgentPortfolioView(countryFilter);
   const range = getPnlRange();
   const stats = periodStats(filteredTrades, range.start, range.end);
   const isAll = range.start == null && range.end == null && state.pnlPeriod.key === "all";
@@ -3143,21 +3327,29 @@ function renderPortfolio() {
     a.upl += value - invested;
   });
 
+  const hasAgentActivity =
+    agentView.summaries.length > 0 ||
+    agentView.trades.length > 0 ||
+    agentView.holdings.length > 0;
+
   const hasAnyActivity =
     allSymbols.length > 0 ||
     (p.trades && p.trades.length > 0) ||
-    Object.values(p.realized || {}).some((v) => v);
+    Object.values(p.realized || {}).some((v) => v) ||
+    (state.agents || []).length > 0;
 
   const hasFilteredActivity =
     symbols.length > 0 ||
     filteredTrades.length > 0 ||
     [...currencies].some(
       (c) => (p.realized[c] || 0) || (stats.byCcy[c]?.realized || 0)
-    );
+    ) ||
+    hasAgentActivity;
 
   if (!hasAnyActivity) {
     el.portfolioSummary.innerHTML = "";
-    el.portfolioHoldings.innerHTML = `<div class="pf-empty">You haven't bought any stocks yet. Open a stock and click <b>Buy</b> to start your paper portfolio.</div>`;
+    if (el.portfolioAgentsSummary) el.portfolioAgentsSummary.innerHTML = "";
+    el.portfolioHoldings.innerHTML = `<div class="pf-empty">You haven't bought any stocks yet. Open a stock and click <b>Buy</b>, or create an <b>Agent</b> with a corpus goal.</div>`;
     el.tradeHistory.innerHTML = "";
     if (el.tradeHistoryMeta) el.tradeHistoryMeta.textContent = "";
     updateNavPnl([]);
@@ -3199,6 +3391,7 @@ function renderPortfolio() {
     el.portfolioSummary.innerHTML = `<div class="pnl-period-banner">No ${countryLabel(
       countryFilter
     )} activity for <b>${range.label}</b>.</div>`;
+    if (el.portfolioAgentsSummary) el.portfolioAgentsSummary.innerHTML = "";
     el.portfolioHoldings.innerHTML = `<div class="pf-empty">No holdings match the ${countryLabel(
       countryFilter
     )} filter.</div>`;
@@ -3215,10 +3408,14 @@ function renderPortfolio() {
         ? ` · ${stats.wins} win${stats.wins === 1 ? "" : "s"} / ${stats.losses} loss${stats.losses === 1 ? "" : "es"}`
         : ""
     }
+    ${
+      agentView.trades.length
+        ? ` · <span class="basket-tag agent-tag">Agent trades included below</span>`
+        : ""
+    }
   </div>`;
 
-  el.portfolioSummary.innerHTML =
-    periodBanner +
+  const mainSummary =
     [...currencies]
       .map((c) => {
         const a = agg[c] || { invested: 0, value: 0, upl: 0 };
@@ -3231,7 +3428,7 @@ function renderPortfolio() {
         const totalLabel = isAll ? "Total P&L" : "Period P&L";
         return `
       <div class="pf-card">
-        <div class="pf-ccy">${CCY_SYMBOL[c] || ""} ${c}</div>
+        <div class="pf-ccy">${CCY_SYMBOL[c] || ""} ${c} · Manual</div>
         <div class="pf-metrics">
           ${pfMetric("Invested", money(a.invested, c))}
           ${pfMetric("Market value", money(a.value, c))}
@@ -3262,12 +3459,20 @@ function renderPortfolio() {
         </div>
       </div>`;
       })
-      .join("");
+      .join("") ||
+    (hasAgentActivity
+      ? `<div class="pf-empty">No manual portfolio activity for this filter — agent books are below.</div>`
+      : "");
+
+  el.portfolioSummary.innerHTML = periodBanner + mainSummary;
+  renderAgentPortfolioSummary(countryFilter);
 
   if (!symbols.length) {
-    el.portfolioHoldings.innerHTML = `<div class="pf-empty">No open ${countryLabel(
-      countryFilter
-    )} positions. Realized results for this filter are shown above.</div>`;
+    el.portfolioHoldings.innerHTML = hasAgentActivity
+      ? `<div class="pf-empty">No open manual positions. Agent holdings are listed under Agent portfolios.</div>`
+      : `<div class="pf-empty">No open ${countryLabel(
+          countryFilter
+        )} positions. Realized results for this filter are shown above.</div>`;
   } else {
     let dirty = false;
     symbols.forEach((sym) => {
@@ -3361,7 +3566,8 @@ function renderPortfolio() {
         </div>`;
       })
       .join("");
-    el.portfolioHoldings.innerHTML = sectorHtml + rows;
+    el.portfolioHoldings.innerHTML =
+      `<div class="agent-pf-holdings-label">Manual holdings</div>` + sectorHtml + rows;
     el.portfolioHoldings.querySelectorAll(".pfh-open").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -3371,18 +3577,20 @@ function renderPortfolio() {
     });
   }
 
-  const filtered = filteredTrades.filter((t) =>
-    tradeInRange(t, range.start, range.end)
-  );
+  const combinedTrades = [...filteredTrades, ...agentView.trades]
+    .filter((t) => tradeInRange(t, range.start, range.end))
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
   if (el.tradeHistoryMeta) {
+    const agentN = combinedTrades.filter((t) => t.source === "agent" || t.agentId).length;
     el.tradeHistoryMeta.textContent =
-      filtered.length === (p.trades || []).length
-        ? `(${filtered.length})`
-        : `(${filtered.length} of ${p.trades.length})`;
+      agentN > 0
+        ? `(${combinedTrades.length} · ${agentN} agent)`
+        : `(${combinedTrades.length})`;
   }
   el.tradeHistory.innerHTML =
-    filtered
-      .slice(0, 50)
+    combinedTrades
+      .slice(0, 80)
       .map((t) => {
         const d = new Date(t.ts);
         const when = d.toLocaleDateString() + " " + d.toLocaleTimeString();
@@ -3398,16 +3606,11 @@ function renderPortfolio() {
               t.score != null ? ` ${t.score > 0 ? "+" : ""}${t.score}` : ""
             }</span>`
           : "";
-        const basketBadge =
-          t.source === "basket"
-            ? `<span class="basket-tag" title="Bought via Diversify basket">Basket buy</span>`
-            : t.source === "analyze"
-              ? `<span class="basket-tag analyze-tag" title="Bought from Portfolio analyzer">Analyzer buy</span>`
-              : "";
-        return `<div class="trade-row">
+        const sourceBadge = tradeSourceBadge(t);
+        return `<div class="trade-row${t.source === "agent" || t.agentId ? " trade-row-agent" : ""}">
           <span class="trade-side ${t.side.toLowerCase()}">${t.side}</span>
           <span class="trade-sym">${t.symbol.replace(".NS", "")}</span>
-          <span>${t.qty} @ ${money(t.price, t.currency)}${extra}${basketBadge}</span>
+          <span>${t.qty} @ ${money(t.price, t.currency)}${extra}${sourceBadge}</span>
           ${sigBadge}
           <span class="trade-when">${when}</span>
         </div>`;

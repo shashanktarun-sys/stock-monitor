@@ -2988,3 +2988,51 @@ body {
   gap: 8px;
   margin-bottom: 8px;
 }
+
+/* Agent summary on Portfolio page */
+.portfolio-agents-summary {
+  margin: 12px 0 18px;
+}
+.agent-pf-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.agent-pf-section-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.agent-pf-goal {
+  margin: 4px 0 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.agent-pf-card .pf-ccy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.agent-pf-holdings-label {
+  margin: 14px 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.basket-tag.agent-tag {
+  background: rgba(79, 124, 255, 0.15);
+  color: var(--accent);
+  border-color: rgba(79, 124, 255, 0.35);
+}
+.trade-row-agent {
+  border-left: 2px solid rgba(79, 124, 255, 0.45);
+  padding-left: 8px;
+}
+.pf-holding.agent-holding {
+  opacity: 0.98;
+}
