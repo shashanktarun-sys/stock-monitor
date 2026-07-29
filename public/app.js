@@ -757,7 +757,12 @@ const el = {
   agentMaxPos: document.getElementById("agentMaxPos"),
   agentAuthorize: document.getElementById("agentAuthorize"),
   agentCreateBtn: document.getElementById("agentCreateBtn"),
+  agentCheckBtn: document.getElementById("agentCheckBtn"),
   agentCreateError: document.getElementById("agentCreateError"),
+  agentFeasibilityPreview: document.getElementById("agentFeasibilityPreview"),
+  afpLabel: document.getElementById("afpLabel"),
+  afpOdds: document.getElementById("afpOdds"),
+  afpBody: document.getElementById("afpBody"),
   navPnl: document.getElementById("navPnl"),
   navAgentPnl: document.getElementById("navAgentPnl"),
   newsPanel: document.getElementById("newsPanel"),
@@ -1047,20 +1052,33 @@ function estimateQuoteDistribution(q) {
   };
 }
 
+// Build a lightweight agent-like object from raw form inputs for feasibility preview
+function agentParamsFromInputs(corpus, targetProfit, horizonDays, country, capFilter, maxPositions) {
+  const now = Date.now();
+  return {
+    corpus: corpus || 50000,
+    targetProfit: targetProfit || 0,
+    horizonDays: horizonDays || 1,
+    deadlineAt: now + (horizonDays || 1) * 86400000,
+    country: country || "US",
+    capFilter: capFilter || "large",
+    maxPositions: maxPositions || 5,
+    positions: {},
+  };
+}
+
 function estimateAgentGoal(agent, preloadedQuotes = null) {
   const quotes = preloadedQuotes || state.quotes || {};
   const stress = assessMarketStress(agent.country);
   const stressPenalty =
-    stress.level === "crash" ? -0.0035 : stress.level === "risk_off" ? -0.0015 : 0;
+    stress.level === "crash" ? -0.005 : stress.level === "risk_off" ? -0.002 : 0;
   const daysLeft = Math.max(
     1,
     Math.ceil(Math.max(0, (agent.deadlineAt - Date.now()) / 86400000))
   );
 
   const heldSymbols = Object.keys(agent.positions || {});
-  let candidates = heldSymbols
-    .map((sym) => quotes[sym])
-    .filter(Boolean);
+  let candidates = heldSymbols.map((sym) => quotes[sym]).filter(Boolean);
 
   if (!candidates.length) {
     candidates = Object.values(quotes)
@@ -1075,50 +1093,73 @@ function estimateAgentGoal(agent, preloadedQuotes = null) {
       .slice(0, Math.max(2, agent.maxPositions));
   }
 
-  // Always produce distributions (estimateQuoteDistribution uses fallback when candles absent)
-  // If no candidates at all, use generic market params
   let dists = candidates.map(estimateQuoteDistribution).filter(Boolean);
   if (!dists.length) {
-    // Generic market fallback — assume mixed large/mid cap portfolio
-    dists = [{ muDaily: 0.0003, sigmaDaily: 0.016, fallback: true }];
+    const capSigma =
+      agent.capFilter === "small" ? 0.021 : agent.capFilter === "large" ? 0.013 : 0.017;
+    dists = [{ muDaily: 0.0004, sigmaDaily: capSigma, fallback: true }];
   }
 
-  const w = 1 / dists.length;
+  const n = dists.length;
+  const w = 1 / n;
+  // Weighted mean daily return
   const muDaily = dists.reduce((s, d) => s + d.muDaily * w, 0) + stressPenalty;
-  // Average sigma (not RMS of weighted) — portfolio diversification reduces vol slightly
-  const sigmaDaily = dists.reduce((s, d) => s + d.sigmaDaily * w, 0) / Math.sqrt(Math.max(1, dists.length * 0.6));
-  const meanH = muDaily * daysLeft;
-  const sigmaH = Math.max(0.0001, sigmaDaily * Math.sqrt(daysLeft));
-  const targetRet = agent.targetProfit / Math.max(1, agent.corpus);
+  // Portfolio sigma — diversification benefit: sigma_portfolio ~ sigma_stock / sqrt(n)
+  const avgSigma = dists.reduce((s, d) => s + d.sigmaDaily * w, 0);
+  const sigmaDaily = avgSigma / Math.sqrt(Math.max(1, n));
+
+  // Multi-trade uplift: agent can recycle cash through multiple round-trips per day.
+  // A paper agent with 5 positions can realistically do 1-2 full cycles over the horizon,
+  // giving an effective "annualized opportunity" multiplier. Cap at 1.8x to be conservative.
+  const tradesPerDay = Math.min(1.8, 0.5 + (agent.maxPositions || 1) * 0.15);
+  const effectiveDays = daysLeft * tradesPerDay;
+
+  // Lognormal P&L model over the horizon
+  const meanH = muDaily * effectiveDays;
+  const sigmaH = Math.max(0.0005, sigmaDaily * Math.sqrt(effectiveDays));
+
+  // Target as fraction of corpus — but agent only needs to profit on deployed portion.
+  // Assume agent deploys ~80% of corpus on average.
+  const deployRatio = 0.80;
+  const effectiveBase = agent.corpus * deployRatio;
+  const targetRet = agent.targetProfit / Math.max(1, effectiveBase);
+
   const z = (targetRet - meanH) / sigmaH;
   const probability = 1 - normalCdf(z);
 
-  // "Higher probability" target uses about 60% modeled odds.
-  const likelyRet60 = meanH - 0.253 * sigmaH;
-  const likelyRet70 = meanH - 0.524 * sigmaH;
-  const suggestedRet = Math.max(0, Math.min(likelyRet60, 0.25));
-  const stretchRet = Math.max(0, Math.min(likelyRet70, 0.2));
-  const suggestedProfit = Math.round(agent.corpus * suggestedRet);
-  const stretchProfit = Math.round(agent.corpus * stretchRet);
+  // Compute "likely" (60% chance) and "stretch" (40% chance) profit targets
+  // z_0.40 = 0.253, z_0.60 = -0.253 (P(X>x) = 0.60 means x = mean - 0.253*sigma)
+  const likelyRet = Math.max(0, meanH - 0.253 * sigmaH);   // 60% odds
+  const stretchRet = Math.max(0, meanH + 0.253 * sigmaH);  // 40% odds (more ambitious)
+  const suggestedProfit = Math.round(effectiveBase * likelyRet);
+  const stretchProfit = Math.round(effectiveBase * stretchRet);
 
   const allFallback = dists.every((d) => d.fallback);
   const confidence =
-    !allFallback && dists.length >= Math.max(2, Math.min(agent.maxPositions, 4))
-      ? "medium"
-      : "low";
+    !allFallback && n >= Math.max(2, Math.min(agent.maxPositions, 4)) ? "medium" : "low";
+
   let note = allFallback
-    ? `${daysLeft}d estimate · using typical market volatility (load quotes for higher accuracy).`
-    : `${daysLeft}d modeled horizon · based on recent volatility and Pulse trend.`;
+    ? `${daysLeft}d estimate · using typical ${agent.capFilter || "market"}-cap volatility.`
+    : `${daysLeft}d modeled · based on ${n} stock${n > 1 ? "s'" : "'s"} recent volatility.`;
   if (stress.level === "crash" || stress.level === "risk_off") {
-    note += ` ${stress.label.toLowerCase()} lowers odds.`;
+    note += ` Market stress (${stress.label}) lowers odds.`;
   }
 
+  const feasibilityLabel =
+    probability >= 0.55 ? "Good" :
+    probability >= 0.35 ? "Moderate" :
+    probability >= 0.15 ? "Challenging" : "Very unlikely";
+
   return {
-    probabilityPct: Math.round(Math.max(0, Math.min(99, probability * 100))),
+    probabilityPct: Math.round(Math.max(1, Math.min(99, probability * 100))),
     suggestedProfit,
     stretchProfit,
     confidence,
+    feasibilityLabel,
     note,
+    daysLeft,
+    muDailyPct: +(muDaily * 100).toFixed(3),
+    sigmaDailyPct: +(sigmaDaily * 100).toFixed(3),
   };
 }
 
@@ -1532,6 +1573,77 @@ function renderAgents() {
   });
 }
 
+function showAgentFeasibilityPreview() {
+  const corpus = Math.floor(Number(el.agentCorpus?.value) || 0);
+  const targetProfit = Math.floor(Number(el.agentTargetProfit?.value) || 0);
+  const horizonDays = Math.max(1, Math.min(90, Math.floor(Number(el.agentHorizon?.value) || 1)));
+  const country = el.agentCountry?.value === "IN" ? "IN" : "US";
+  const capFilter = el.agentCapFilter?.value || "large";
+  const maxPositions = Math.max(1, Math.min(12, Math.floor(Number(el.agentMaxPos?.value) || 5)));
+  const cur = country === "IN" ? "₹" : "$";
+
+  if (!(corpus >= 100) || !(targetProfit >= 1)) {
+    if (el.agentCreateError) {
+      el.agentCreateError.textContent = "Fill in corpus and target profit first.";
+      el.agentCreateError.classList.remove("hidden");
+    }
+    return;
+  }
+  if (el.agentCreateError) el.agentCreateError.classList.add("hidden");
+
+  const mockAgent = agentParamsFromInputs(corpus, targetProfit, horizonDays, country, capFilter, maxPositions);
+  const model = estimateAgentGoal(mockAgent);
+  const returnPct = ((targetProfit / corpus) * 100).toFixed(1);
+
+  const colorClass =
+    model.probabilityPct >= 55 ? "afp-good" :
+    model.probabilityPct >= 35 ? "afp-moderate" :
+    model.probabilityPct >= 15 ? "afp-challenging" : "afp-unlikely";
+
+  if (el.afpLabel) {
+    el.afpLabel.textContent = model.feasibilityLabel;
+    el.afpLabel.className = `afp-label ${colorClass}`;
+  }
+  if (el.afpOdds) el.afpOdds.textContent = `${model.probabilityPct}% chance of success`;
+
+  const warningLine = model.probabilityPct < 20
+    ? `<p class="afp-warn">⚠ This goal is very aggressive — a ${returnPct}% return in ${horizonDays}d is rare even in ideal conditions.</p>`
+    : model.probabilityPct < 40
+    ? `<p class="afp-warn">This goal is challenging. Consider a lower target or longer horizon.</p>`
+    : "";
+
+  if (el.afpBody) {
+    el.afpBody.innerHTML = `
+      ${warningLine}
+      <div class="afp-row">
+        <span>Your target</span><b>${cur}${targetProfit.toLocaleString()} (${returnPct}% of corpus in ${horizonDays}d)</b>
+      </div>
+      <div class="afp-row afp-suggest">
+        <span>Likely target <small>(60% odds)</small></span><b>${cur}${(model.suggestedProfit || 0).toLocaleString()}</b>
+      </div>
+      <div class="afp-row afp-stretch">
+        <span>Stretch target <small>(40% odds)</small></span><b>${cur}${(model.stretchProfit || 0).toLocaleString()}</b>
+      </div>
+      <p class="afp-note">${model.note}${model.confidence === "low" ? " · Low confidence — open quotes page to improve accuracy." : ""}</p>
+    `;
+  }
+
+  el.agentFeasibilityPreview?.classList.remove("hidden");
+  // Reveal Create button after feasibility is shown
+  el.agentCreateBtn?.classList.remove("hidden");
+}
+
+// Reset feasibility preview when user changes form fields
+["agentCorpus", "agentTargetProfit", "agentHorizon", "agentCountry", "agentCapFilter", "agentMaxPos"].forEach((id) => {
+  document.getElementById(id)?.addEventListener("input", () => {
+    el.agentFeasibilityPreview?.classList.add("hidden");
+    el.agentCreateBtn?.classList.add("hidden");
+    if (el.agentCreateError) el.agentCreateError.classList.add("hidden");
+  });
+});
+
+el.agentCheckBtn?.addEventListener("click", showAgentFeasibilityPreview);
+
 el.agentCreateForm?.addEventListener("submit", (e) => {
   e.preventDefault();
   if (el.agentCreateError) {
@@ -1556,6 +1668,8 @@ el.agentCreateForm?.addEventListener("submit", (e) => {
   if (el.agentAuthorize) el.agentAuthorize.checked = true;
   if (el.agentCountry) el.agentCountry.value = state.country;
   if (el.agentCapFilter) el.agentCapFilter.value = "large";
+  el.agentFeasibilityPreview?.classList.add("hidden");
+  el.agentCreateBtn?.classList.add("hidden");
   renderAgents();
   showTradeToast(`Agent <b>${result.agent.name}</b> created · corpus-limited paper trading`);
 });

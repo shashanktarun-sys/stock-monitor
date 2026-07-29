@@ -519,8 +519,16 @@
             <input type="checkbox" id="agentAuthorize" checked />
             Authorize this agent to buy &amp; sell using only the assigned corpus
           </label>
+          <div id="agentFeasibilityPreview" class="agent-feasibility-preview hidden">
+            <div class="afp-header">
+              <span id="afpLabel" class="afp-label"></span>
+              <span id="afpOdds" class="afp-odds"></span>
+            </div>
+            <div id="afpBody" class="afp-body"></div>
+          </div>
           <div class="agent-create-actions">
-            <button type="submit" class="mini-btn primary" id="agentCreateBtn">Create agent</button>
+            <button type="button" class="mini-btn secondary" id="agentCheckBtn">Check feasibility</button>
+            <button type="submit" class="mini-btn primary hidden" id="agentCreateBtn">Create agent</button>
           </div>
           <div id="agentCreateError" class="auth-error hidden"></div>
         </form>

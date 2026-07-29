@@ -2948,6 +2948,67 @@ body {
 }
 .agent-create-actions {
   margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.agent-feasibility-preview {
+  margin: 10px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--card-bg, #0f1923);
+}
+.afp-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.afp-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.afp-good { background: #0d3321; color: #34d399; }
+.afp-moderate { background: #1e2d0e; color: #a3e635; }
+.afp-challenging { background: #2d1f08; color: #fb923c; }
+.afp-unlikely { background: #2d0e0e; color: #f87171; }
+.afp-odds {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.afp-body {
+  font-size: 0.82rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.afp-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+.afp-row b { color: var(--text); }
+.afp-suggest b { color: #34d399; }
+.afp-stretch b { color: #fb923c; }
+.afp-warn {
+  color: #fb923c;
+  font-size: 0.8rem;
+  margin: 0 0 4px;
+}
+.afp-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.77rem;
 }
 .agents-list {
   display: flex;
