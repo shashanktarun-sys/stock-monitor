@@ -13,27 +13,39 @@ function sha256Hex(text) {
   return crypto.createHash("sha256").update(String(text), "utf8").digest("hex");
 }
 
-function encodeForm(obj) {
-  return Object.entries(obj)
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-    .join("&");
-}
-
 async function shoonyaPost(endpoint, jData, jKey = null, { allowEmpty = false } = {}) {
-  const body = jKey
-    ? encodeForm({ jData: JSON.stringify(jData), jKey })
-    : encodeForm({ jData: JSON.stringify(jData) });
-  const res = await fetch(`${HOST}/${endpoint}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  const text = await res.text();
+  // Shoonya/Noren expects raw `jData={json}` (and optional `&jKey=...`), NOT
+  // application/x-www-form-urlencoded percent-encoding of the JSON payload.
+  let body = `jData=${JSON.stringify(jData)}`;
+  if (jKey) body += `&jKey=${jKey}`;
+
+  const url = `${HOST}/${endpoint}`;
+  let res;
+  let text;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body,
+    });
+    text = await res.text();
+  } catch (netErr) {
+    const err = new Error(`Could not reach Shoonya API: ${netErr.message}`);
+    err.status = 502;
+    throw err;
+  }
+
+  console.log(
+    `[shoonya] ${endpoint} http=${res.status} body=${String(text).slice(0, 300)}`
+  );
+
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    const err = new Error(`Shoonya returned non-JSON (${res.status})`);
+    const err = new Error(
+      `Shoonya returned non-JSON (${res.status}): ${String(text).slice(0, 160)}`
+    );
     err.status = 502;
     throw err;
   }
@@ -50,6 +62,7 @@ async function shoonyaPost(endpoint, jData, jKey = null, { allowEmpty = false } 
     err.shoonya = json;
     throw err;
   }
+  // Some replies are a bare array (order book / positions)
   return json;
 }
 
@@ -92,7 +105,8 @@ export async function shoonyaLogin({
   const factor2 = String(twoFA || "").trim();
   const secret = String(apiSecret || "").trim();
   const vc = String(vendorCode || `${uid}_U`).trim();
-  const device = String(imei || "pulse-web-1").trim();
+  // IMEI from Prism API Key screen is preferred; fallback is fine for many accounts
+  const device = String(imei || "abc1234").trim() || "abc1234";
 
   if (!uid || !pwdPlain || !factor2 || !secret) {
     const err = new Error("User ID, password, 2FA, and API secret are required");
@@ -111,7 +125,33 @@ export async function shoonyaLogin({
     imei: device,
   };
 
-  const data = await shoonyaPost("QuickAuth", payload);
+  console.log(
+    `[shoonya] QuickAuth uid=${uid} vc=${vc} imei=${device} factor2_len=${factor2.length}`
+  );
+
+  let data;
+  try {
+    data = await shoonyaPost("QuickAuth", payload);
+  } catch (err) {
+    // If hashed appkey fails with invalid key-ish errors, retry with raw secret once
+    // (docs occasionally disagree on whether Prism key is pre-hashed).
+    const msg = String(err.message || "").toLowerCase();
+    if (/appkey|api key|vendor|invalid input/i.test(msg)) {
+      console.log("[shoonya] retrying QuickAuth with alternate appkey encoding");
+      try {
+        data = await shoonyaPost("QuickAuth", {
+          ...payload,
+          appkey: secret.length === 64 && /^[a-f0-9]+$/i.test(secret)
+            ? secret.toLowerCase()
+            : sha256Hex(`${uid}|${secret}`),
+        });
+      } catch (err2) {
+        throw err2;
+      }
+    } else {
+      throw err;
+    }
+  }
   const token = data.susertoken;
   if (!token) {
     const err = new Error(data.emsg || "Shoonya login did not return a session token");

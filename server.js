@@ -2443,7 +2443,8 @@ const server = http.createServer(async (req, res) => {
           message: "Shoonya connected. You can place live India orders from Pilot.",
         });
       } catch (err) {
-        return sendJson(res, err.status || 500, { error: err.message });
+        console.error("[shoonya] connect failed:", err.message);
+        return sendJson(res, err.status || 500, { error: err.message || "Connect failed" });
       }
     }
 

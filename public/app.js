@@ -919,6 +919,7 @@ const el = {
   shoonyaTwoFA: document.getElementById("shoonyaTwoFA"),
   shoonyaApiSecret: document.getElementById("shoonyaApiSecret"),
   shoonyaVendorCode: document.getElementById("shoonyaVendorCode"),
+  shoonyaImei: document.getElementById("shoonyaImei"),
   shoonyaMsg: document.getElementById("shoonyaMsg"),
   shoonyaConnectBtn: document.getElementById("shoonyaConnectBtn"),
   shoonyaDisconnectBtn: document.getElementById("shoonyaDisconnectBtn"),
@@ -6957,6 +6958,7 @@ el.shoonyaConnectForm?.addEventListener("submit", async (e) => {
   const twoFA = String(el.shoonyaTwoFA?.value || "").trim();
   const apiSecret = String(el.shoonyaApiSecret?.value || "").trim();
   const vendorCode = String(el.shoonyaVendorCode?.value || "").trim();
+  const imei = String(el.shoonyaImei?.value || "").trim();
   if (!userid || !password || !twoFA || !apiSecret) {
     return showMsg(el.shoonyaMsg, "Fill user id, password, 2FA, and API secret.", false);
   }
@@ -6965,10 +6967,27 @@ el.shoonyaConnectForm?.addEventListener("submit", async (e) => {
     const r = await fetch("/api/broker/shoonya/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userid, password, twoFA, apiSecret, vendorCode: vendorCode || undefined }),
+      body: JSON.stringify({
+        userid,
+        password,
+        twoFA,
+        apiSecret,
+        vendorCode: vendorCode || undefined,
+        imei: imei || undefined,
+      }),
     });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error || "Connect failed");
+    const text = await r.text();
+    let j = {};
+    try {
+      j = JSON.parse(text);
+    } catch {
+      throw new Error(
+        r.status === 404
+          ? "Connect endpoint missing — server needs redeploy/restart with Shoonya support."
+          : `Connect failed (HTTP ${r.status}): ${text.slice(0, 180) || "empty response"}`
+      );
+    }
+    if (!r.ok) throw new Error(j.error || `Connect failed (HTTP ${r.status})`);
     state.shoonyaConnected = true;
     state.shoonyaUid = j.uid || userid;
     if (el.shoonyaPassword) el.shoonyaPassword.value = "";
