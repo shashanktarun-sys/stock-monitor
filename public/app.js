@@ -643,6 +643,7 @@ const el = {
   loginOverlay: document.getElementById("loginOverlay"),
   googleBtn: document.getElementById("googleBtn"),
   googleUnavailable: document.getElementById("googleUnavailable"),
+  authHostHint: document.getElementById("authHostHint"),
   guestBtn: document.getElementById("guestBtn"),
   // Auth views
   viewSignin: document.getElementById("viewSignin"),
@@ -5426,11 +5427,22 @@ el.loginOverlay.addEventListener("click", (e) => {
 });
 
 async function initAuth() {
+  let authHint = null;
   try {
     const cfg = await (await fetch("/api/config")).json();
     authClientId = cfg.googleClientId || null;
+    authHint = cfg.authHint || null;
   } catch {
     authClientId = null;
+  }
+  if (el.authHostHint) {
+    if (authHint) {
+      el.authHostHint.textContent = authHint;
+      el.authHostHint.classList.remove("hidden");
+    } else {
+      el.authHostHint.textContent = "";
+      el.authHostHint.classList.add("hidden");
+    }
   }
   let user = null;
   try {

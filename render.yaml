@@ -13,3 +13,7 @@ services:
         value: production
       - key: APP_NAME
         value: Pulse Stock Pal
+      # Optional — set in Render Dashboard → Environment for real auth:
+      # GOOGLE_CLIENT_ID  — Google OAuth Web client ID (add https://pulse-stock-pal.onrender.com to Authorized JavaScript origins)
+      # SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM — for real OTP emails
+      # PULSE_DATA_DIR — path to a persistent disk mount so accounts survive redeploys

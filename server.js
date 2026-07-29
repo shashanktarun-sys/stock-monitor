@@ -24,6 +24,11 @@ const SMTP_PASS = process.env.SMTP_PASS || "";
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
 const APP_NAME = process.env.APP_NAME || "Pulse";
 const EMAIL_ENABLED = Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
+const ON_EPHEMERAL_HOST = Boolean(
+  process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.FLY_APP_NAME
+);
+/* Free hosts wipe local disk on redeploy unless PULSE_DATA_DIR points at a disk. */
+const EPHEMERAL_AUTH = ON_EPHEMERAL_HOST && !process.env.PULSE_DATA_DIR;
 
 /* -------------------------------------------------------------------------- */
 /*  Yahoo Finance data fetching (live source)                                 */
@@ -1889,7 +1894,9 @@ async function verifyGoogleCredential(credential) {
 /*  Email + password accounts (with email OTP verification)                   */
 /* -------------------------------------------------------------------------- */
 
-const DATA_DIR = path.join(__dirname, "data");
+const DATA_DIR = path.resolve(
+  process.env.PULSE_DATA_DIR || path.join(__dirname, "data")
+);
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 
 // Persistent user store: email(lowercase) -> { id, email, name, salt, hash, verified, createdAt }
@@ -2174,7 +2181,11 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         googleClientId: GOOGLE_CLIENT_ID || null,
         emailAuth: true,
-        emailDelivery: EMAIL_ENABLED, // false => dev mode (OTP shown in response)
+        emailDelivery: EMAIL_ENABLED, // false => OTP returned in API (no SMTP)
+        ephemeralAuth: EPHEMERAL_AUTH,
+        authHint: EPHEMERAL_AUTH
+          ? "Accounts on this free public host reset when the server redeploys. Create an account here, or continue as guest. Local PC accounts are separate."
+          : null,
       });
     }
 
@@ -2393,8 +2404,13 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const email = normalizeEmail(body.email);
       const rec = users[email];
-      if (!rec || !rec.verified)
-        return sendJson(res, 404, { error: "No account found with that email." });
+      if (!rec || !rec.verified) {
+        return sendJson(res, 404, {
+          error: EPHEMERAL_AUTH
+            ? "No account on this public server with that email. Sign up here first (PC accounts don't carry over), or continue as guest. Free hosting may also wipe accounts after redeploys."
+            : "No account found with that email. Create one with Sign up first.",
+        });
+      }
       const code = genOtp();
       pendingResets.set(email, {
         code,
@@ -2412,6 +2428,9 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         email,
         emailDelivery: EMAIL_ENABLED,
+        message: EMAIL_ENABLED
+          ? "Reset code sent. Check your inbox."
+          : "Email not configured on this server — use the code shown below.",
         devOtp: EMAIL_ENABLED ? undefined : code,
       });
     }

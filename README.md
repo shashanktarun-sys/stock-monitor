@@ -78,8 +78,8 @@ deploys as **pulse-stock-pal** on the free plan.
 
 Notes:
 - Free Render services **sleep after ~15 minutes** of no traffic; the first request after sleep can take ~30–60s.
-- Disk is ephemeral — user accounts / synced portfolios in `data/` reset if the service is wiped or moved. For durable storage later, add a database or disk.
-- Optional: set `GOOGLE_CLIENT_ID` and SMTP env vars in the Render dashboard for Google login and real OTP emails.
+- Disk is ephemeral — accounts in `data/` (or `PULSE_DATA_DIR`) **do not carry over from your PC**, and reset when the free service redeploys. Use **Sign up** on the public URL, or **Continue as guest**. For durable accounts, attach a Render disk and set `PULSE_DATA_DIR` to its mount path.
+- Optional: set `GOOGLE_CLIENT_ID` and SMTP env vars in the Render dashboard for Google login and real OTP emails (without SMTP, signup/reset still works and shows the OTP on screen).
 ## Use it on your iPhone (installable PWA)
 
 Pulse is a **Progressive Web App**, so you can add it to your iPhone Home Screen
