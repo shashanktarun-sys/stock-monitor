@@ -274,7 +274,12 @@
             <input type="checkbox" id="diversifyExcludeHeld" checked />
             Skip names I already hold
           </label>
+          <label class="diversify-check stress-override hidden" id="diversifyAllowCrashWrap">
+            <input type="checkbox" id="diversifyAllowCrashBuys" />
+            Allow high-risk buys in crash mode
+          </label>
         </div>
+        <div id="diversifyStressBanner" class="stress-banner hidden" role="status"></div>
         <div id="diversifyMeta" class="diversify-meta"></div>
         <div id="diversifyCharts" class="diversify-charts hidden">
           <div class="diversify-chart-card">
@@ -324,7 +329,12 @@
             Add budget
             <input type="number" id="analyzeBudget" min="1" step="1" value="3000" />
           </label>
+          <label class="diversify-check stress-override hidden" id="analyzeAllowCrashWrap">
+            <input type="checkbox" id="analyzeAllowCrashBuys" />
+            Allow high-risk buys in crash mode
+          </label>
         </div>
+        <div id="analyzeStressBanner" class="stress-banner hidden" role="status"></div>
         <div id="analyzeSummary" class="analyze-summary"></div>
         <div id="analyzeMeta" class="diversify-meta"></div>
         <div id="analyzeCharts" class="analyze-charts-wrap hidden">

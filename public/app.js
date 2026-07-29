@@ -582,6 +582,9 @@ const el = {
   diversifyCount: document.getElementById("diversifyCount"),
   diversifyCountry: document.getElementById("diversifyCountry"),
   diversifyExcludeHeld: document.getElementById("diversifyExcludeHeld"),
+  diversifyAllowCrashWrap: document.getElementById("diversifyAllowCrashWrap"),
+  diversifyAllowCrashBuys: document.getElementById("diversifyAllowCrashBuys"),
+  diversifyStressBanner: document.getElementById("diversifyStressBanner"),
   diversifyMeta: document.getElementById("diversifyMeta"),
   diversifyCharts: document.getElementById("diversifyCharts"),
   diversifyIndustryChart: document.getElementById("diversifyIndustryChart"),
@@ -596,6 +599,9 @@ const el = {
   analyzeRun: document.getElementById("analyzeRun"),
   analyzeCountry: document.getElementById("analyzeCountry"),
   analyzeBudget: document.getElementById("analyzeBudget"),
+  analyzeAllowCrashWrap: document.getElementById("analyzeAllowCrashWrap"),
+  analyzeAllowCrashBuys: document.getElementById("analyzeAllowCrashBuys"),
+  analyzeStressBanner: document.getElementById("analyzeStressBanner"),
   analyzeSummary: document.getElementById("analyzeSummary"),
   analyzeMeta: document.getElementById("analyzeMeta"),
   analyzeCharts: document.getElementById("analyzeCharts"),
@@ -2087,6 +2093,14 @@ function clearDiversifyPlan() {
   el.diversifyActions?.classList.add("hidden");
 }
 
+function confirmCrashBuyIfNeeded(contextLabel) {
+  const stress = contextLabel === "analyze" ? analyzePlan?.stress : diversifyPlan?.stress;
+  if (!stress || (stress.level !== "risk_off" && stress.level !== "crash")) return true;
+  return confirm(
+    `${stress.label}: new buys are high risk while markets are selling off broadly. Continue with this buy anyway?`
+  );
+}
+
 const DIVERSIFY_PIE_COLORS = [
   "#4f7cff",
   "#23c98b",
@@ -2252,6 +2266,25 @@ function renderDiversifyPlan(plan) {
 }
 
 function buyDiversifyRow(symbol) {
+  if (
+    diversifyPlan?.stress &&
+    isStressBlockingBuys(diversifyPlan.stress, !!el.diversifyAllowCrashBuys?.checked)
+  ) {
+    showTradeToast("Basket buys are paused in crash mode.");
+    return;
+  }
+  if (
+    (diversifyPlan?.stress?.level === "risk_off" ||
+      diversifyPlan?.stress?.level === "crash") &&
+    el.diversifyAllowCrashBuys?.checked
+  ) {
+    if (
+      !confirm(
+        "Markets look risk-off / crash-like. Buying now is high risk. Continue with this buy?"
+      )
+    )
+      return;
+  }
   const row = diversifyPlan?.rows?.find((r) => r.symbol === symbol);
   const q = state.quotes[symbol];
   if (!row || !q?.price) return;
@@ -2287,6 +2320,24 @@ function buyDiversifyRow(symbol) {
 
 function buyDiversifyAll() {
   if (!diversifyPlan?.rows?.length) return;
+  if (
+    diversifyPlan.stress &&
+    isStressBlockingBuys(diversifyPlan.stress, !!el.diversifyAllowCrashBuys?.checked)
+  ) {
+    showTradeToast("Basket buys are paused in crash mode.");
+    return;
+  }
+  if (
+    diversifyPlan.stress?.level === "risk_off" ||
+    diversifyPlan.stress?.level === "crash"
+  ) {
+    if (
+      !confirm(
+        `${diversifyPlan.stress.label}: buying a full basket now is high risk (COVID / recession / war-style conditions). Continue anyway?`
+      )
+    )
+      return;
+  }
   const rows = [...diversifyPlan.rows];
   const basketId = diversifyPlan.basketId || (diversifyPlan.basketId = "b" + Date.now());
   let bought = 0;
@@ -2329,6 +2380,7 @@ async function generateDiversifyBasket() {
   const targetCount = Math.min(12, Math.max(2, Math.floor(Number(el.diversifyCount?.value) || 5)));
   const excludeHeld = !!el.diversifyExcludeHeld?.checked;
   const currency = country === "IN" ? "INR" : "USD";
+  const allowCrashBuys = !!el.diversifyAllowCrashBuys?.checked;
 
   diversifyBusy = true;
   if (el.diversifyGenerate) el.diversifyGenerate.disabled = true;
@@ -2353,6 +2405,31 @@ async function generateDiversifyBasket() {
           /* skip failed */
         }
       });
+    }
+
+    const stress = assessMarketStress(country);
+    renderStressBanner(el.diversifyStressBanner, stress, el.diversifyAllowCrashWrap);
+    const blockBuys = isStressBlockingBuys(stress, allowCrashBuys);
+
+    if (blockBuys) {
+      diversifyPlan = {
+        country,
+        currency,
+        budget,
+        rows: [],
+        spent: 0,
+        stress,
+        buysBlocked: true,
+      };
+      if (el.diversifyMeta) {
+        el.diversifyMeta.innerHTML = `<b class="down">${stress.label}</b> — basket buys paused. Tick <b>Allow high-risk buys in crash mode</b> only if you accept crash risk, then Suggest again.`;
+      }
+      el.diversifyCharts?.classList.add("hidden");
+      if (el.diversifyResults) {
+        el.diversifyResults.innerHTML = `<div class="pf-empty">In COVID / recession / war-style selloffs, Pulse prioritizes capital preservation over buying dips. Override only if you understand the risk.</div>`;
+      }
+      el.diversifyActions?.classList.add("hidden");
+      return;
     }
 
     const held = heldSectorWeights();
@@ -2385,6 +2462,10 @@ async function generateDiversifyBasket() {
           heldShare > 0.15
             ? ` · already ${Math.round(heldShare * 100)}% of portfolio`
             : " · helps diversification"
+        }${
+          stress.level === "risk_off" || stress.level === "crash"
+            ? " · HIGH RISK (stress override on)"
+            : ""
         }`,
       });
     }
@@ -2392,10 +2473,15 @@ async function generateDiversifyBasket() {
     const basket = pickDiversifiedBasket(candidates, targetCount);
     const rows = allocateQuantities(basket, budget);
     const spent = rows.reduce((s, r) => s + r.spend, 0);
-    diversifyPlan = { country, currency, budget, rows, spent };
+    diversifyPlan = { country, currency, budget, rows, spent, stress, buysBlocked: false };
     if (el.diversifyMeta && !rows.length && candidates.length) {
       el.diversifyMeta.textContent =
         "Found bullish ideas, but the budget is too small for full shares. Increase budget and try again.";
+    } else if (el.diversifyMeta && (stress.level === "risk_off" || stress.level === "crash")) {
+      el.diversifyMeta.innerHTML = `<b class="down">${stress.label}</b> · high-risk basket enabled · suggested <b>${rows.length}</b> names · spend <b>${money(
+        spent,
+        currency
+      )}</b> of <b>${money(budget, currency)}</b>`;
     }
     renderDiversifyPlan(diversifyPlan);
   } catch (err) {
@@ -2770,6 +2856,124 @@ function updateNavPnl(totals) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Market stress / crash mode (COVID, recession, war-style breadth)          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Detect risk-off / crash from quote breadth for a market.
+ * Uses Pulse signals + day change across loaded quotes.
+ */
+function assessMarketStress(country) {
+  const key =
+    country === "IN" || country === "US" ? country : state.country || "US";
+  const samples = Object.entries(state.quotes || {})
+    .filter(
+      ([sym, q]) =>
+        q?.analysis && matchesMarket(sym, q.currency, key)
+    )
+    .map(([, q]) => q);
+
+  const n = samples.length;
+  if (n < 6) {
+    return {
+      level: "unknown",
+      country: key,
+      n,
+      downPct: 0,
+      bearishPct: 0,
+      avgChange: 0,
+      label: "Market breadth unknown",
+      summary: "Not enough quotes loaded yet to judge crash conditions.",
+    };
+  }
+
+  let down = 0;
+  let bearish = 0;
+  let sumChg = 0;
+  let chgN = 0;
+  for (const q of samples) {
+    const chg = q.analysis?.changePercent;
+    if (chg != null && !Number.isNaN(chg)) {
+      sumChg += chg;
+      chgN += 1;
+      if (chg < 0) down += 1;
+    }
+    if (isBearishSignal(q.analysis?.recommendation)) bearish += 1;
+  }
+  const downPct = chgN ? down / chgN : 0;
+  const bearishPct = bearish / n;
+  const avgChange = chgN ? sumChg / chgN : 0;
+
+  let level = "normal";
+  if (bearishPct >= 0.7 || downPct >= 0.8 || avgChange <= -5) level = "crash";
+  else if (bearishPct >= 0.55 || downPct >= 0.65 || avgChange <= -3)
+    level = "risk_off";
+
+  const label =
+    level === "crash"
+      ? "Crash / panic mode"
+      : level === "risk_off"
+        ? "Risk-off mode"
+        : "Markets normal";
+  const summary =
+    level === "normal"
+      ? `Breadth looks orderly across ${n} ${key} names.`
+      : `Systemic stress across ${n} ${key} names · ${Math.round(
+          downPct * 100
+        )}% down · ${Math.round(bearishPct * 100)}% bearish Pulse · avg ${signedPct(
+          avgChange
+        )}. Preserve capital — stock-picking is less reliable.`;
+
+  return {
+    level,
+    country: key,
+    n,
+    downPct,
+    bearishPct,
+    avgChange,
+    label,
+    summary,
+  };
+}
+
+function stressBannerHtml(stress) {
+  if (!stress || stress.level === "normal" || stress.level === "unknown") return "";
+  const tip =
+    stress.level === "crash"
+      ? "Prefer raise cash, trim losers, and Hold quality names. New buys are paused unless you opt in to high-risk mode."
+      : "Favor Hold / Trim over aggressive buys. Basket buys need an explicit high-risk override.";
+  return `<div class="stress-banner-inner level-${stress.level}">
+    <div class="stress-banner-title">${escapeAttr(stress.label)}</div>
+    <p>${escapeAttr(stress.summary)}</p>
+    <p class="stress-banner-tip">${tip}</p>
+  </div>`;
+}
+
+function renderStressBanner(node, stress, overrideWrap) {
+  if (!node) return;
+  const html = stressBannerHtml(stress);
+  if (!html) {
+    node.classList.add("hidden");
+    node.innerHTML = "";
+    overrideWrap?.classList.add("hidden");
+    return;
+  }
+  node.innerHTML = html;
+  node.classList.remove("hidden");
+  if (stress.level === "risk_off" || stress.level === "crash") {
+    overrideWrap?.classList.remove("hidden");
+  } else {
+    overrideWrap?.classList.add("hidden");
+  }
+}
+
+function isStressBlockingBuys(stress, allowOverrideChecked) {
+  if (!stress) return false;
+  if (stress.level !== "risk_off" && stress.level !== "crash") return false;
+  return !allowOverrideChecked;
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Portfolio analyzer (buy / sell / add suggestions)                         */
 /* -------------------------------------------------------------------------- */
 
@@ -2788,7 +2992,7 @@ function syncAnalyzeCountryUI() {
   }
 }
 
-function analyzeHoldingSuggestion(symbol, pos, held) {
+function analyzeHoldingSuggestion(symbol, pos, held, stress) {
   const q = state.quotes[symbol];
   if (!q?.price || !pos) return null;
   const reco = q.analysis?.recommendation || null;
@@ -2799,6 +3003,8 @@ function analyzeHoldingSuggestion(symbol, pos, held) {
   const uplPct = invested ? (upl / invested) * 100 : 0;
   const sector = pos.sector || q.sector || "Unknown";
   const sectorShare = held.weights[sector] || 0;
+  const stressOn = stress?.level === "risk_off" || stress?.level === "crash";
+  const crashOn = stress?.level === "crash";
   const reasons = (q.analysis?.reasons || [])
     .slice(0, 2)
     .map((r) => r.text || r)
@@ -2817,53 +3023,57 @@ function analyzeHoldingSuggestion(symbol, pos, held) {
     sectorShare,
     reasons,
   };
+  const stressNote = stressOn
+    ? ` Market is in ${stress.label.toLowerCase()} — preserve capital.`
+    : "";
 
-  if (isBearishSignal(reco)) {
-    if (uplPct >= 3) {
+  if (isBearishSignal(reco) || (stressOn && uplPct <= -2)) {
+    if (uplPct >= 1 || (stressOn && uplPct >= 0)) {
       return {
         ...base,
         type: "sell",
-        priority: 90 + Math.min(20, uplPct),
+        priority: (crashOn ? 95 : 90) + Math.min(20, Math.max(0, uplPct)),
         tone: "down",
-        title: "Take profit — sell",
+        title: stressOn ? "Raise cash — sell" : "Take profit — sell",
         qty: pos.qty,
-        why: `Pulse is ${reco}${score != null ? ` (${score > 0 ? "+" : ""}${score})` : ""} while you are up ${signedPct(
-          uplPct
-        )}. Locking gains may protect profit.${
-          reasons[0] ? ` ${reasons[0]}` : ""
-        }`,
+        why: `Pulse is ${reco || "weak"}${score != null ? ` (${score > 0 ? "+" : ""}${score})` : ""} while you are ${
+          uplPct >= 0 ? "up" : "flat"
+        } ${signedPct(uplPct)}.${stressNote}${reasons[0] ? ` ${reasons[0]}` : ""}`,
       };
     }
-    if (uplPct <= -4) {
+    if (uplPct <= (stressOn ? -2 : -4) || crashOn) {
+      const trimQty = crashOn
+        ? pos.qty
+        : Math.max(1, Math.floor(pos.qty * (stressOn ? 0.5 : 0.5)));
       return {
         ...base,
-        type: "sell",
-        priority: 85 + Math.min(15, Math.abs(uplPct)),
+        type: crashOn || uplPct <= -4 ? "sell" : "trim",
+        priority: (crashOn ? 92 : 85) + Math.min(15, Math.abs(uplPct)),
         tone: "down",
-        title: "Cut loss — sell",
-        qty: pos.qty,
-        why: `Pulse flipped to ${reco} and the position is down ${signedPct(
-          uplPct
-        )}. Exiting can free cash for stronger ideas.${
-          reasons[0] ? ` ${reasons[0]}` : ""
-        }`,
+        title: crashOn
+          ? "Cut risk — sell"
+          : uplPct <= -4
+            ? "Cut loss — sell"
+            : "Trim in risk-off",
+        qty: crashOn || uplPct <= -4 ? pos.qty : trimQty,
+        why: `Broad market stress and/or Pulse ${reco || "SELL"}. Reducing exposure frees cash for later.${stressNote}`,
       };
     }
     const trimQty = Math.max(1, Math.floor(pos.qty / 2));
     return {
       ...base,
       type: "trim",
-      priority: 70,
+      priority: stressOn ? 78 : 70,
       tone: "down",
       title: "Trim position",
       qty: trimQty,
-      why: `Pulse is ${reco} with mixed P&L (${signedPct(
+      why: `Pulse is ${reco || "soft"} with mixed P&L (${signedPct(
         uplPct
-      )}). Selling about half reduces risk while keeping upside.`,
+      )}). Selling about half reduces risk.${stressNote}`,
     };
   }
 
-  if (isBullishSignal(reco)) {
+  if (isBullishSignal(reco) && !stressOn) {
     if (uplPct <= -8) {
       return {
         ...base,
@@ -2887,7 +3097,7 @@ function analyzeHoldingSuggestion(symbol, pos, held) {
         qty: 0,
         why: `Pulse remains ${reco}${score != null ? ` (${score > 0 ? "+" : ""}${score})` : ""} and ${sector} is not oversized (${Math.round(
           sectorShare * 100
-        )}% of portfolio). Use Add budget below for new names rather than averaging here.`,
+        )}% of portfolio). Use Add budget for new names rather than averaging here.`,
       };
     }
     return {
@@ -2901,18 +3111,42 @@ function analyzeHoldingSuggestion(symbol, pos, held) {
     };
   }
 
+  // Stress + still bullish on a name: prefer hold quality / trim if concentrated
+  if (stressOn && isBullishSignal(reco)) {
+    if (sectorShare >= 0.35 || uplPct <= -5) {
+      return {
+        ...base,
+        type: "trim",
+        priority: 72,
+        tone: "muted",
+        title: "Trim — crash diversification",
+        qty: Math.max(1, Math.floor(pos.qty / 3)),
+        why: `Even with ${reco}, systemic stress makes concentration dangerous.${stressNote}`,
+      };
+    }
+    return {
+      ...base,
+      type: "hold",
+      priority: 55,
+      tone: "muted",
+      title: "Hold quality — wait",
+      qty: 0,
+      why: `${reco} on this name, but market breadth is weak. Prefer patience over buying more.${stressNote}`,
+    };
+  }
+
   // HOLD / unknown
-  if (uplPct <= -6) {
+  if (uplPct <= (stressOn ? -3 : -6) || (stressOn && sectorShare >= 0.3)) {
     return {
       ...base,
       type: "trim",
-      priority: 60,
+      priority: stressOn ? 68 : 60,
       tone: "muted",
-      title: "Review — consider trim",
+      title: stressOn ? "Trim — raise cash" : "Review — consider trim",
       qty: Math.max(1, Math.floor(pos.qty / 2)),
-      why: `No clear Pulse edge (HOLD) and the position is down ${signedPct(
-        uplPct
-      )}. Trimming can reduce drag.`,
+      why: `No clear Pulse edge and ${
+        stressOn ? "markets are risk-off" : `the position is down ${signedPct(uplPct)}`
+      }. Trimming can reduce drag.${stressNote}`,
     };
   }
   if (sectorShare >= 0.4) {
@@ -2925,17 +3159,19 @@ function analyzeHoldingSuggestion(symbol, pos, held) {
       qty: Math.max(1, Math.floor(pos.qty / 3)),
       why: `${sector} is ~${Math.round(
         sectorShare * 100
-      )}% of your portfolio. Reducing size improves diversification.`,
+      )}% of your portfolio. Reducing size improves diversification.${stressNote}`,
     };
   }
   return {
     ...base,
     type: "hold",
-    priority: 15,
+    priority: stressOn ? 45 : 15,
     tone: "muted",
-    title: "Hold",
+    title: stressOn ? "Hold — preserve capital" : "Hold",
     qty: 0,
-    why: "No urgent change — Pulse is neutral and the position is stable.",
+    why: stressOn
+      ? `Stay patient.${stressNote}`
+      : "No urgent change — Pulse is neutral and the position is stable.",
   };
 }
 
@@ -3295,6 +3531,11 @@ function applyAnalyzeSuggestion(idx) {
       `${s.type === "trim" ? "Trimmed" : "Sold"} ${result.qty} ${s.symbol.replace(".NS", "")} · suggestion applied`
     );
   } else if (s.type === "add") {
+    if (analyzePlan?.stress && isStressBlockingBuys(analyzePlan.stress, !!el.analyzeAllowCrashBuys?.checked)) {
+      showTradeToast("New buys are paused in crash mode.");
+      return;
+    }
+    if (!confirmCrashBuyIfNeeded("analyze")) return;
     buyStock(
       s.symbol,
       s.qty,
@@ -3329,6 +3570,28 @@ async function runPortfolioAnalysis(opts = {}) {
     syncAnalyzeCountryUI();
     const countryFilter = el.analyzeCountry?.value || "ALL";
     const budget = Math.max(1, Number(el.analyzeBudget?.value) || 3000);
+    const stressCountry =
+      countryFilter === "IN" || countryFilter === "US"
+        ? countryFilter
+        : state.country || "US";
+
+    // Load market breadth quotes so crash detection is meaningful.
+    try {
+      let universe = state.universe;
+      if (!universe.length || state.country !== stressCountry) {
+        universe = await fetchUniverse(stressCountry);
+        if (state.country === stressCountry) state.universe = universe;
+      }
+      await ensureQuotesForAnalyze(
+        (universe || []).slice(0, 40).map((it) => it.symbol).filter(Boolean)
+      );
+    } catch {
+      /* breadth best-effort */
+    }
+
+    const stress = assessMarketStress(stressCountry);
+    const allowCrashBuys = !!el.analyzeAllowCrashBuys?.checked;
+    renderStressBanner(el.analyzeStressBanner, stress, el.analyzeAllowCrashWrap);
 
     const held = heldSectorWeights();
     const symbols = Object.keys(state.portfolio.positions).filter((sym) => {
@@ -3340,13 +3603,17 @@ async function runPortfolioAnalysis(opts = {}) {
     await ensureQuotesForAnalyze(symbols);
 
     const holdingSuggestions = symbols
-      .map((sym) => analyzeHoldingSuggestion(sym, state.portfolio.positions[sym], held))
+      .map((sym) =>
+        analyzeHoldingSuggestion(sym, state.portfolio.positions[sym], held, stress)
+      )
       .filter(Boolean);
 
     const heldSet = new Set(Object.keys(state.portfolio.positions));
-    const addIdeas = symbols.length
-      ? await buildAddIdeas(countryFilter, budget, heldSet, held)
-      : [];
+    const blockBuys = isStressBlockingBuys(stress, allowCrashBuys);
+    const addIdeas =
+      symbols.length && !blockBuys
+        ? await buildAddIdeas(countryFilter, budget, heldSet, held)
+        : [];
 
     const buySpend = addIdeas.reduce((s, r) => s + (r.spend || 0), 0);
     const buyCcy = addIdeas[0]?.currency || (countryFilter === "IN" ? "INR" : "USD");
@@ -3370,6 +3637,15 @@ async function runPortfolioAnalysis(opts = {}) {
     const newTotal = projectedRows.reduce((s, r) => s + r.spend, 0);
     const leftover = Math.max(0, budget - buySpend);
 
+    const stressLine =
+      stress.level === "risk_off" || stress.level === "crash"
+        ? ` · <b class="down">${stress.label}</b>${
+            blockBuys
+              ? " · new buys paused"
+              : " · high-risk buys enabled"
+          }`
+        : "";
+
     analyzePlan = {
       holdingCount: symbols.length,
       suggestions,
@@ -3378,6 +3654,7 @@ async function runPortfolioAnalysis(opts = {}) {
       chartCurrency,
       buySpend,
       budget,
+      stress,
       summaryHtml: symbols.length
         ? `Style: <b>${trader.label}</b> · <b>${sells}</b> exit/trim · <b>${adds}</b> buy${
             adds === 1 ? "" : "s"
@@ -3385,13 +3662,13 @@ async function runPortfolioAnalysis(opts = {}) {
             buySpend,
             buyCcy
           )}</b>${
-            leftover > 0.01
+            leftover > 0.01 && adds
               ? ` · <span class="down">${money(leftover, buyCcy)} undeployed</span> (share prices)`
               : ""
           } · book <b>${money(nowTotal, chartCurrency)}</b> → <b>${money(
             newTotal,
             chartCurrency
-          )}</b>`
+          )}</b>${stressLine}`
         : "Add holdings first, then run Analyze.",
     };
     renderAnalyzePlan(analyzePlan);
