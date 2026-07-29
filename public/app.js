@@ -4786,16 +4786,28 @@ function renderSuggestions(items) {
     .join("");
   el.suggestions.classList.add("open");
   el.suggestions.querySelectorAll(".suggestion").forEach((node) => {
-    node.addEventListener("click", () => {
+    node.addEventListener("mousedown", (e) => {
+      e.preventDefault(); // keep focus stable; pick on click would race with blur
       pickSymbol(node.dataset.symbol);
     });
   });
 }
 
+function closeSuggestions() {
+  clearTimeout(searchTimer);
+  searchTimer = null;
+  if (el.suggestions) {
+    el.suggestions.classList.remove("open");
+    el.suggestions.innerHTML = "";
+  }
+  lastSuggestions = [];
+  activeIdx = -1;
+}
+
 function pickSymbol(symbol) {
-  addSymbol(symbol);
-  el.search.value = "";
   closeSuggestions();
+  el.search.value = "";
+  addSymbol(symbol);
 }
 
 function highlight() {
@@ -4894,7 +4906,7 @@ el.country.addEventListener("change", () => {
   el.detailContent.classList.add("hidden");
   el.emptyState.classList.remove("hidden");
   el.search.value = "";
-  el.suggestions.classList.remove("open");
+  closeSuggestions();
   closeMoversEditor();
   renderWatchlist();
   refreshMovers();
