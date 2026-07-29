@@ -3183,18 +3183,15 @@ function collectAgentPortfolioView(countryFilter) {
 function renderAgentPortfolioSummary(countryFilter) {
   if (!el.portfolioAgentsSummary) return;
   const { summaries, holdings } = collectAgentPortfolioView(countryFilter);
-  if (!summaries.length) {
-    el.portfolioAgentsSummary.innerHTML = "";
-    return;
-  }
 
-  const cards = summaries
-    .map(({ agent, currency, invested, value, cash, equity, pnl, holdings: holdN }) => {
-      const progress = Math.max(
-        0,
-        Math.min(100, (pnl / Math.max(1, agent.targetProfit)) * 100)
-      );
-      return `<div class="pf-card agent-pf-card">
+  const cards = summaries.length
+    ? summaries
+        .map(({ agent, currency, invested, value, cash, equity, pnl, holdings: holdN }) => {
+          const progress = Math.max(
+            0,
+            Math.min(100, (pnl / Math.max(1, agent.targetProfit)) * 100)
+          );
+          return `<div class="pf-card agent-pf-card">
         <div class="pf-ccy">
           🤖 ${agent.name}
           <span class="agent-status status-${agent.status}">${agent.status}</span>
@@ -3218,8 +3215,9 @@ function renderAgentPortfolioSummary(countryFilter) {
           <div class="agent-progress-bar" style="width:${progress}%"></div>
         </div>
       </div>`;
-    })
-    .join("");
+        })
+        .join("")
+    : `<div class="pf-empty">No agent books yet. Create one under <b>Agents</b> with a corpus and goal.</div>`;
 
   const holdingRows = holdings
     .map(({ agentName, symbol, pos, price, currency }) => {
@@ -3243,15 +3241,20 @@ function renderAgentPortfolioSummary(countryFilter) {
     .join("");
 
   el.portfolioAgentsSummary.innerHTML = `
-    <div class="agent-pf-section-head">
-      <h3>Agent portfolios</h3>
+    <div class="pf-book-head">
+      <div>
+        <h3>Agent books</h3>
+        <p class="pf-book-blurb">Goal-driven agents trading only their assigned corpus</p>
+      </div>
       <button type="button" class="ghost-btn small" id="portfolioGotoAgents">Manage agents</button>
     </div>
     <div class="portfolio-summary agent-pf-cards">${cards}</div>
     ${
       holdingRows
         ? `<div class="agent-pf-holdings-label">Agent holdings</div><div class="portfolio-holdings">${holdingRows}</div>`
-        : `<div class="pf-empty">Agents have no open holdings yet.</div>`
+        : summaries.length
+          ? `<div class="pf-empty">Agents have no open holdings yet.</div>`
+          : ""
     }`;
 
   el.portfolioAgentsSummary.querySelector("#portfolioGotoAgents")?.addEventListener("click", () =>
@@ -3347,9 +3350,16 @@ function renderPortfolio() {
     hasAgentActivity;
 
   if (!hasAnyActivity) {
-    el.portfolioSummary.innerHTML = "";
-    if (el.portfolioAgentsSummary) el.portfolioAgentsSummary.innerHTML = "";
-    el.portfolioHoldings.innerHTML = `<div class="pf-empty">You haven't bought any stocks yet. Open a stock and click <b>Buy</b>, or create an <b>Agent</b> with a corpus goal.</div>`;
+    el.portfolioSummary.innerHTML = `
+      <div class="pf-book-head">
+        <div>
+          <h3>Pilot book</h3>
+          <p class="pf-book-blurb">Trades you place yourself — buy/sell from Market</p>
+        </div>
+      </div>
+      <div class="pf-empty">No Pilot book activity yet. Open a stock and click <b>Buy</b>.</div>`;
+    renderAgentPortfolioSummary(countryFilter);
+    el.portfolioHoldings.innerHTML = "";
     el.tradeHistory.innerHTML = "";
     if (el.tradeHistoryMeta) el.tradeHistoryMeta.textContent = "";
     updateNavPnl([]);
@@ -3388,13 +3398,18 @@ function renderPortfolio() {
   updateNavPnl(navTotals);
 
   if (!hasFilteredActivity) {
-    el.portfolioSummary.innerHTML = `<div class="pnl-period-banner">No ${countryLabel(
+    el.portfolioSummary.innerHTML = `
+      <div class="pf-book-head">
+        <div>
+          <h3>Pilot book</h3>
+          <p class="pf-book-blurb">Trades you place yourself — buy/sell from Market</p>
+        </div>
+      </div>
+      <div class="pnl-period-banner">No ${countryLabel(
       countryFilter
-    )} activity for <b>${range.label}</b>.</div>`;
-    if (el.portfolioAgentsSummary) el.portfolioAgentsSummary.innerHTML = "";
-    el.portfolioHoldings.innerHTML = `<div class="pf-empty">No holdings match the ${countryLabel(
-      countryFilter
-    )} filter.</div>`;
+    )} Pilot activity for <b>${range.label}</b>.</div>`;
+    renderAgentPortfolioSummary(countryFilter);
+    el.portfolioHoldings.innerHTML = "";
     el.tradeHistory.innerHTML = `<div class="pf-empty">No trades match this country filter.</div>`;
     if (el.tradeHistoryMeta) el.tradeHistoryMeta.textContent = "(0)";
     return;
@@ -3402,7 +3417,7 @@ function renderPortfolio() {
 
   const periodBanner = `<div class="pnl-period-banner">
     Showing <b>${range.label}</b> · <b>${countryLabel(countryFilter)}</b>
-    · ${stats.buys} buy${stats.buys === 1 ? "" : "s"}, ${stats.sells} sell${stats.sells === 1 ? "" : "s"}
+    · Pilot ${stats.buys} buy${stats.buys === 1 ? "" : "s"}, ${stats.sells} sell${stats.sells === 1 ? "" : "s"}
     ${
       stats.sells
         ? ` · ${stats.wins} win${stats.wins === 1 ? "" : "s"} / ${stats.losses} loss${stats.losses === 1 ? "" : "es"}`
@@ -3410,12 +3425,12 @@ function renderPortfolio() {
     }
     ${
       agentView.trades.length
-        ? ` · <span class="basket-tag agent-tag">Agent trades included below</span>`
+        ? ` · <span class="basket-tag agent-tag">${agentView.trades.length} agent trade${agentView.trades.length === 1 ? "" : "s"}</span>`
         : ""
     }
   </div>`;
 
-  const mainSummary =
+  const pilotCards =
     [...currencies]
       .map((c) => {
         const a = agg[c] || { invested: 0, value: 0, upl: 0 };
@@ -3427,8 +3442,8 @@ function renderPortfolio() {
         const realizedLabel = isAll ? "Realized" : "Period realized";
         const totalLabel = isAll ? "Total P&L" : "Period P&L";
         return `
-      <div class="pf-card">
-        <div class="pf-ccy">${CCY_SYMBOL[c] || ""} ${c} · Manual</div>
+      <div class="pf-card pilot-pf-card">
+        <div class="pf-ccy">${CCY_SYMBOL[c] || ""} ${c}</div>
         <div class="pf-metrics">
           ${pfMetric("Invested", money(a.invested, c))}
           ${pfMetric("Market value", money(a.value, c))}
@@ -3460,19 +3475,22 @@ function renderPortfolio() {
       </div>`;
       })
       .join("") ||
-    (hasAgentActivity
-      ? `<div class="pf-empty">No manual portfolio activity for this filter — agent books are below.</div>`
-      : "");
+    `<div class="pf-empty">No Pilot book positions for this filter.</div>`;
 
-  el.portfolioSummary.innerHTML = periodBanner + mainSummary;
+  el.portfolioSummary.innerHTML = `
+    ${periodBanner}
+    <div class="pf-book-head">
+      <div>
+        <h3>Pilot book</h3>
+        <p class="pf-book-blurb">Trades you place yourself — buy/sell from Market, Basket, or Analyze</p>
+      </div>
+      <span class="pf-book-chip">Self-directed</span>
+    </div>
+    <div class="portfolio-summary pilot-pf-cards">${pilotCards}</div>`;
   renderAgentPortfolioSummary(countryFilter);
 
   if (!symbols.length) {
-    el.portfolioHoldings.innerHTML = hasAgentActivity
-      ? `<div class="pf-empty">No open manual positions. Agent holdings are listed under Agent portfolios.</div>`
-      : `<div class="pf-empty">No open ${countryLabel(
-          countryFilter
-        )} positions. Realized results for this filter are shown above.</div>`;
+    el.portfolioHoldings.innerHTML = `<div class="agent-pf-holdings-label">Pilot holdings</div><div class="pf-empty">No open Pilot positions. Agent holdings are in the Agent books panel.</div>`;
   } else {
     let dirty = false;
     symbols.forEach((sym) => {
@@ -3567,7 +3585,7 @@ function renderPortfolio() {
       })
       .join("");
     el.portfolioHoldings.innerHTML =
-      `<div class="agent-pf-holdings-label">Manual holdings</div>` + sectorHtml + rows;
+      `<div class="agent-pf-holdings-label">Pilot holdings</div>` + sectorHtml + rows;
     el.portfolioHoldings.querySelectorAll(".pfh-open").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -5760,7 +5778,7 @@ el.moversReset.addEventListener("click", () => {
 });
 
 el.portfolioReset.addEventListener("click", () => {
-  if (!confirm("Reset your paper portfolio? This clears all holdings and trade history.")) return;
+  if (!confirm("Reset your Pilot book? This clears manual holdings and trade history (agent books are kept).")) return;
   state.portfolio = { positions: {}, trades: [], realized: {} };
   state.signalAlerts = {};
   savePortfolio();

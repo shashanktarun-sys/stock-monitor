@@ -49,7 +49,7 @@
           <button id="navMarket" class="nav-btn" title="Go to market watchlist and analysis">
             📊 Market
           </button>
-          <button id="navPortfolio" class="nav-btn" title="Go to your paper portfolio">
+          <button id="navPortfolio" class="nav-btn" title="Pilot book and agent portfolio desk">
             💼 Portfolio
             <span id="navPnl" class="nav-pnl"></span>
           </button>
@@ -202,16 +202,19 @@
     <section class="app-page hidden" id="portfolioPage">
     <section class="portfolio-panel" id="portfolioPanel">
       <div class="panel-head">
-        <h2>Paper Portfolio <span id="portfolioTraderType" class="trader-class-badge compact hidden"></span></h2>
+        <h2>Portfolio desk <span id="portfolioTraderType" class="trader-class-badge compact hidden"></span></h2>
         <div class="panel-head-actions">
-          <button type="button" class="mini-btn primary" id="portfolioAnalyzeBtn" title="Analyze holdings and suggest changes">
-            Analyze portfolio
+          <button type="button" class="mini-btn primary" id="portfolioAnalyzeBtn" title="Analyze portfolio and suggest changes">
+            Analyze Pilot book
           </button>
-          <button id="portfolioReset" class="ghost-btn small" title="Clear all holdings and history">
-            Reset
+          <button id="portfolioReset" class="ghost-btn small" title="Clear Pilot book holdings and history">
+            Reset Pilot book
           </button>
         </div>
       </div>
+      <p class="diversify-sub portfolio-desk-sub">
+        Two paper books on one desk: <b>Pilot book</b> (trades you place) and <b>Agent books</b> (corpus-limited agents).
+      </p>
       <div class="pnl-period-bar" id="pnlPeriodBar">
         <span class="pnl-period-label">P&amp;L period</span>
         <div class="pnl-period-btns" role="group" aria-label="P&amp;L time period">
@@ -237,8 +240,10 @@
           <button type="button" class="mini-btn" id="pnlCustomApply">Apply</button>
         </div>
       </div>
-      <div id="portfolioSummary" class="portfolio-summary"></div>
-      <div id="portfolioAgentsSummary" class="portfolio-agents-summary"></div>
+      <div class="portfolio-dashboard" id="portfolioDashboard">
+        <div id="portfolioSummary" class="portfolio-summary pf-book-panel"></div>
+        <div id="portfolioAgentsSummary" class="portfolio-agents-summary pf-book-panel"></div>
+      </div>
       <div id="portfolioHoldings" class="portfolio-holdings"></div>
       <details class="trade-history-wrap" open>
         <summary>Trade history <span id="tradeHistoryMeta" class="trade-history-meta"></span></summary>
