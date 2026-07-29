@@ -7,27 +7,28 @@ import crypto from "node:crypto";
 import { VENUES } from "./types.js";
 import { insertOrder, getBrokerConnection, upsertBrokerConnection } from "../lib/store.js";
 
-const HOST = "https://api.shoonya.com/NorenWClientTP";
+const HOST_API = "https://api.shoonya.com/NorenWClientAPI";
+const HOST_TP = "https://api.shoonya.com/NorenWClientTP";
 
 function sha256Hex(text) {
   return crypto.createHash("sha256").update(String(text), "utf8").digest("hex");
 }
 
-async function shoonyaPost(endpoint, jData, jKey = null, { allowEmpty = false } = {}) {
-  // Shoonya/Noren expects raw `jData={json}` (and optional `&jKey=...`), NOT
-  // application/x-www-form-urlencoded percent-encoding of the JSON payload.
+async function shoonyaPost(endpoint, jData, jKey = null, { allowEmpty = false, host } = {}) {
+  // Shoonya/Noren expects raw `jData={json}` (and optional `&jKey=...`).
+  // As of 2026, NorenWClientTP often returns nginx 502; NorenWClientAPI is the live path.
   let body = `jData=${JSON.stringify(jData)}`;
   if (jKey) body += `&jKey=${jKey}`;
 
-  const url = `${HOST}/${endpoint}`;
+  const base = host || HOST_API;
+  const url = `${base}/${endpoint}`;
+  const headers = { "Content-Type": "text/plain" };
+  if (jKey) headers.Authorization = `Bearer ${jKey}`;
+
   let res;
   let text;
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body,
-    });
+    res = await fetch(url, { method: "POST", headers, body });
     text = await res.text();
   } catch (netErr) {
     const err = new Error(`Could not reach Shoonya API: ${netErr.message}`);
@@ -36,8 +37,18 @@ async function shoonyaPost(endpoint, jData, jKey = null, { allowEmpty = false } 
   }
 
   console.log(
-    `[shoonya] ${endpoint} http=${res.status} body=${String(text).slice(0, 300)}`
+    `[shoonya] ${base.split(".com")[1] || ""}/${endpoint} http=${res.status} body=${String(text).slice(0, 300)}`
   );
+
+  // TP gateway sometimes returns HTML 502 — caller may retry on API host
+  if (res.status >= 500 && /bad gateway|html/i.test(text)) {
+    const err = new Error(
+      `Shoonya gateway error (${res.status}) on ${endpoint}. Their API host may be down — try again shortly.`
+    );
+    err.status = 502;
+    err.gateway = true;
+    throw err;
+  }
 
   let json;
   try {
@@ -62,7 +73,6 @@ async function shoonyaPost(endpoint, jData, jKey = null, { allowEmpty = false } 
     err.shoonya = json;
     throw err;
   }
-  // Some replies are a bare array (order book / positions)
   return json;
 }
 
@@ -129,30 +139,51 @@ export async function shoonyaLogin({
     `[shoonya] QuickAuth uid=${uid} vc=${vc} imei=${device} factor2_len=${factor2.length}`
   );
 
+  async function attempt(appkey) {
+    // Prefer live API host; fall back to classic TP if API rejects unexpectedly
+    try {
+      return await shoonyaPost("QuickAuth", { ...payload, appkey }, null, {
+        host: HOST_API,
+      });
+    } catch (err) {
+      if (err.gateway) {
+        return shoonyaPost("QuickAuth", { ...payload, appkey }, null, {
+          host: HOST_TP,
+        });
+      }
+      throw err;
+    }
+  }
+
   let data;
   try {
-    data = await shoonyaPost("QuickAuth", payload);
+    data = await attempt(sha256Hex(`${uid}|${secret}`));
   } catch (err) {
-    // If hashed appkey fails with invalid key-ish errors, retry with raw secret once
-    // (docs occasionally disagree on whether Prism key is pre-hashed).
     const msg = String(err.message || "").toLowerCase();
     if (/appkey|api key|vendor|invalid input/i.test(msg)) {
-      console.log("[shoonya] retrying QuickAuth with alternate appkey encoding");
-      try {
-        data = await shoonyaPost("QuickAuth", {
-          ...payload,
-          appkey: secret.length === 64 && /^[a-f0-9]+$/i.test(secret)
-            ? secret.toLowerCase()
-            : sha256Hex(`${uid}|${secret}`),
-        });
-      } catch (err2) {
-        throw err2;
+      console.log("[shoonya] retrying QuickAuth with raw/prism appkey variants");
+      const alts = [];
+      if (secret.length === 64 && /^[a-f0-9]+$/i.test(secret)) {
+        alts.push(secret.toLowerCase());
       }
+      alts.push(secret); // raw Prism secret as appkey
+      alts.push(sha256Hex(secret));
+      let last = err;
+      for (const alt of alts) {
+        try {
+          data = await attempt(alt);
+          last = null;
+          break;
+        } catch (e2) {
+          last = e2;
+        }
+      }
+      if (last) throw last;
     } else {
       throw err;
     }
   }
-  const token = data.susertoken;
+  const token = data.susertoken || data.access_token;
   if (!token) {
     const err = new Error(data.emsg || "Shoonya login did not return a session token");
     err.status = 401;
