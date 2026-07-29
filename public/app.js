@@ -36,6 +36,9 @@ const state = {
   pnlPeriod: loadPnlPeriod(),
   portfolioCountry: loadPortfolioCountry(),
   signalAlerts: loadSignalAlerts(),
+  shoonyaConnected: false,
+  shoonyaUid: null,
+  tradeVenue: localStorage.getItem("pulse_trade_venue") || "paper", // paper | shoonya
 };
 state.watchlist = loadWatchlist(state.country);
 
@@ -110,11 +113,55 @@ async function placeServerOrder(payload) {
   return json;
 }
 
+function isIndiaSymbol(symbol, currency) {
+  const s = String(symbol || "").toUpperCase();
+  return s.endsWith(".NS") || s.endsWith(".BO") || s.endsWith(".BSE") || currency === "INR";
+}
+
+function resolveTradeVenue(symbol, currency) {
+  if (
+    state.tradeVenue === "shoonya" &&
+    state.shoonyaConnected &&
+    isIndiaSymbol(symbol, currency)
+  ) {
+    return "shoonya";
+  }
+  return "paper";
+}
+
+function saveTradeVenue(venue) {
+  state.tradeVenue = venue === "shoonya" ? "shoonya" : "paper";
+  localStorage.setItem("pulse_trade_venue", state.tradeVenue);
+}
+
+async function refreshShoonyaStatus() {
+  if (!currentUser) {
+    state.shoonyaConnected = false;
+    state.shoonyaUid = null;
+    return;
+  }
+  try {
+    const r = await fetch("/api/broker/shoonya/status");
+    const j = await r.json().catch(() => ({}));
+    state.shoonyaConnected = !!(r.ok && j.connected);
+    state.shoonyaUid = j.uid || null;
+  } catch {
+    state.shoonyaConnected = false;
+  }
+}
+
 async function buyStock(symbol, qty, price, currency, name, signal, industryInfo, opts) {
   qty = Math.floor(qty);
   if (!(qty > 0) || !(price > 0)) return null;
 
   if (currentUser) {
+    const venue = resolveTradeVenue(symbol, currency);
+    if (venue === "shoonya") {
+      const ok = window.confirm(
+        `Place a LIVE Shoonya BUY for ${qty} × ${symbol}?\n\nThis uses real money in your brokerage account.`
+      );
+      if (!ok) return null;
+    }
     try {
       const result = await placeServerOrder({
         symbol,
@@ -126,10 +173,17 @@ async function buyStock(symbol, qty, price, currency, name, signal, industryInfo
         signal,
         industryInfo,
         opts,
-        venue: "paper",
+        venue,
+        product: "C",
       });
       delete state.signalAlerts[symbol];
       saveSignalAlerts();
+      if (venue === "shoonya") {
+        showTradeToast(
+          `Live order sent to Shoonya${result.brokerOrderId ? ` · #${result.brokerOrderId}` : ""}`
+        );
+        return result.fill || { qty, price, currency, venue: "shoonya", brokerOrderId: result.brokerOrderId };
+      }
       return result.fill || { qty, price, currency };
     } catch (err) {
       showTradeToast(err.message || "Buy failed");
@@ -181,10 +235,20 @@ async function buyStock(symbol, qty, price, currency, name, signal, industryInfo
 
 async function sellStock(symbol, qty, price, currency, signal) {
   if (currentUser) {
-    const pos = state.portfolio.positions[symbol];
-    if (!pos) return null;
-    qty = Math.min(Math.floor(qty), pos.qty);
+    const venue = resolveTradeVenue(symbol, currency);
+    qty = Math.floor(qty);
+    if (venue === "paper") {
+      const pos = state.portfolio.positions[symbol];
+      if (!pos) return null;
+      qty = Math.min(qty, pos.qty);
+    }
     if (!(qty > 0)) return null;
+    if (venue === "shoonya") {
+      const ok = window.confirm(
+        `Place a LIVE Shoonya SELL for ${qty} × ${symbol}?\n\nThis uses your real brokerage position.`
+      );
+      if (!ok) return null;
+    }
     try {
       const result = await placeServerOrder({
         symbol,
@@ -193,10 +257,27 @@ async function sellStock(symbol, qty, price, currency, signal) {
         price,
         currency,
         signal,
-        venue: "paper",
+        venue,
+        product: "C",
       });
-      if (!state.portfolio.positions[symbol]) delete state.signalAlerts[symbol];
-      saveSignalAlerts();
+      if (venue === "paper" && !state.portfolio.positions[symbol]) {
+        delete state.signalAlerts[symbol];
+        saveSignalAlerts();
+      }
+      if (venue === "shoonya") {
+        showTradeToast(
+          `Live sell sent to Shoonya${result.brokerOrderId ? ` · #${result.brokerOrderId}` : ""}`
+        );
+        return (
+          result.fill || {
+            currency,
+            qty,
+            price,
+            venue: "shoonya",
+            brokerOrderId: result.brokerOrderId,
+          }
+        );
+      }
       return (
         result.fill || {
           realized: result.fill?.realized,
@@ -831,6 +912,16 @@ const el = {
   profileBtn: document.getElementById("profileBtn"),
   profileOverlay: document.getElementById("profileOverlay"),
   profileClose: document.getElementById("profileClose"),
+  shoonyaStatus: document.getElementById("shoonyaStatus"),
+  shoonyaConnectForm: document.getElementById("shoonyaConnectForm"),
+  shoonyaUserId: document.getElementById("shoonyaUserId"),
+  shoonyaPassword: document.getElementById("shoonyaPassword"),
+  shoonyaTwoFA: document.getElementById("shoonyaTwoFA"),
+  shoonyaApiSecret: document.getElementById("shoonyaApiSecret"),
+  shoonyaVendorCode: document.getElementById("shoonyaVendorCode"),
+  shoonyaMsg: document.getElementById("shoonyaMsg"),
+  shoonyaConnectBtn: document.getElementById("shoonyaConnectBtn"),
+  shoonyaDisconnectBtn: document.getElementById("shoonyaDisconnectBtn"),
   profileAvatar: document.getElementById("profileAvatar"),
   profileName: document.getElementById("profileName"),
   profileEmail: document.getElementById("profileEmail"),
@@ -5378,6 +5469,28 @@ function tradeCardHtml(q) {
   return `
     <div class="trade-card">
       <div class="trade-position">${posInfo}</div>
+      <div class="trade-venue-row" id="tradeVenueRow">
+        <label class="trade-venue-opt">
+          <input type="radio" name="tradeVenue" value="paper" ${
+            state.tradeVenue !== "shoonya" ? "checked" : ""
+          } />
+          Paper
+        </label>
+        <label class="trade-venue-opt ${state.shoonyaConnected && isIndiaSymbol(q.symbol, q.currency) ? "" : "disabled"}" title="${
+          state.shoonyaConnected
+            ? isIndiaSymbol(q.symbol, q.currency)
+              ? "Send order to your Shoonya account"
+              : "Shoonya supports India symbols only"
+            : "Connect Shoonya in Profile first"
+        }">
+          <input type="radio" name="tradeVenue" value="shoonya" ${
+            state.tradeVenue === "shoonya" ? "checked" : ""
+          } ${
+            state.shoonyaConnected && isIndiaSymbol(q.symbol, q.currency) ? "" : "disabled"
+          } />
+          Live · Shoonya
+        </label>
+      </div>
       <div class="trade-form">
         <div class="qty-wrap">
           <label>Qty</label>
@@ -5385,7 +5498,9 @@ function tradeCardHtml(q) {
         </div>
         <span class="trade-cost" id="tradeCost"></span>
         <button class="mini-btn primary" id="buyBtn">Buy</button>
-        <button class="mini-btn" id="sellBtn" ${pos ? "" : "disabled"}>Sell</button>
+        <button class="mini-btn" id="sellBtn" ${
+          pos || (state.shoonyaConnected && state.tradeVenue === "shoonya") ? "" : "disabled"
+        }>Sell</button>
       </div>
     </div>`;
 }
@@ -5396,6 +5511,19 @@ function wireTradeControls(q) {
   const buyBtn = el.detailContent.querySelector("#buyBtn");
   const sellBtn = el.detailContent.querySelector("#sellBtn");
   if (!qtyEl) return;
+
+  el.detailContent.querySelectorAll('input[name="tradeVenue"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      if (radio.checked) saveTradeVenue(radio.value);
+      if (sellBtn) {
+        const pos = state.portfolio.positions[q.symbol];
+        sellBtn.disabled = !(
+          pos ||
+          (state.shoonyaConnected && state.tradeVenue === "shoonya")
+        );
+      }
+    });
+  });
 
   const updateCost = () => {
     const qty = Math.max(0, Math.floor(Number(qtyEl.value) || 0));
@@ -6414,6 +6542,11 @@ let authClientId = null;
 function setUser(user) {
   currentUser = user;
   state.user = user;
+  if (user) refreshShoonyaStatus();
+  else {
+    state.shoonyaConnected = false;
+    state.shoonyaUid = null;
+  }
 }
 
 function updateAuthUI() {
@@ -6800,6 +6933,73 @@ function clearMsg(node) {
   node.classList.add("hidden");
 }
 
+function updateShoonyaProfileUI() {
+  if (!el.shoonyaStatus) return;
+  if (state.shoonyaConnected) {
+    el.shoonyaStatus.textContent = `Connected${state.shoonyaUid ? ` · ${state.shoonyaUid}` : ""}`;
+    el.shoonyaStatus.classList.add("connected");
+    el.shoonyaDisconnectBtn?.classList.remove("hidden");
+    el.shoonyaConnectBtn && (el.shoonyaConnectBtn.textContent = "Reconnect");
+  } else {
+    el.shoonyaStatus.textContent = "Not connected";
+    el.shoonyaStatus.classList.remove("connected");
+    el.shoonyaDisconnectBtn?.classList.add("hidden");
+    el.shoonyaConnectBtn && (el.shoonyaConnectBtn.textContent = "Connect Shoonya");
+  }
+}
+
+el.shoonyaConnectForm?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!currentUser) return showLogin("signin");
+  clearMsg(el.shoonyaMsg);
+  const userid = String(el.shoonyaUserId?.value || "").trim();
+  const password = String(el.shoonyaPassword?.value || "");
+  const twoFA = String(el.shoonyaTwoFA?.value || "").trim();
+  const apiSecret = String(el.shoonyaApiSecret?.value || "").trim();
+  const vendorCode = String(el.shoonyaVendorCode?.value || "").trim();
+  if (!userid || !password || !twoFA || !apiSecret) {
+    return showMsg(el.shoonyaMsg, "Fill user id, password, 2FA, and API secret.", false);
+  }
+  el.shoonyaConnectBtn.disabled = true;
+  try {
+    const r = await fetch("/api/broker/shoonya/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userid, password, twoFA, apiSecret, vendorCode: vendorCode || undefined }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "Connect failed");
+    state.shoonyaConnected = true;
+    state.shoonyaUid = j.uid || userid;
+    if (el.shoonyaPassword) el.shoonyaPassword.value = "";
+    if (el.shoonyaTwoFA) el.shoonyaTwoFA.value = "";
+    if (el.shoonyaApiSecret) el.shoonyaApiSecret.value = "";
+    updateShoonyaProfileUI();
+    showMsg(el.shoonyaMsg, j.message || "Shoonya connected.", true);
+  } catch (err) {
+    showMsg(el.shoonyaMsg, err.message || "Connect failed", false);
+  } finally {
+    el.shoonyaConnectBtn.disabled = false;
+  }
+});
+
+el.shoonyaDisconnectBtn?.addEventListener("click", async () => {
+  if (!currentUser) return;
+  clearMsg(el.shoonyaMsg);
+  try {
+    const r = await fetch("/api/broker/shoonya/disconnect", { method: "POST" });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "Disconnect failed");
+    state.shoonyaConnected = false;
+    state.shoonyaUid = null;
+    saveTradeVenue("paper");
+    updateShoonyaProfileUI();
+    showMsg(el.shoonyaMsg, "Disconnected from Shoonya.", true);
+  } catch (err) {
+    showMsg(el.shoonyaMsg, err.message || "Disconnect failed", false);
+  }
+});
+
 function openProfile() {
   const u = state.user;
   if (!u) return showLogin("signin");
@@ -6838,6 +7038,8 @@ function openProfile() {
   el.statWatch.textContent = watchN;
   el.statHoldings.textContent = holdN;
   el.statTrades.textContent = tradeN;
+
+  refreshShoonyaStatus().then(() => updateShoonyaProfileUI());
 
   const realized = state.portfolio.realized || {};
   const entries = Object.entries(realized).filter(([, v]) => v);

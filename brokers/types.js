@@ -37,7 +37,15 @@ export const VENUES = Object.freeze({
   PAPER: "paper",
   ALPACA: "alpaca",
   ZERODHA: "zerodha",
+  SHOONYA: "shoonya",
 });
 
 /** @type {ReadonlyArray<string>} */
-export const SUPPORTED_LIVE_VENUES = Object.freeze([VENUES.ALPACA, VENUES.ZERODHA]);
+export const SUPPORTED_LIVE_VENUES = Object.freeze([
+  VENUES.SHOONYA,
+  VENUES.ALPACA,
+  VENUES.ZERODHA,
+]);
+
+/** Venues with a working adapter in this build */
+export const LIVE_VENUES_ENABLED = Object.freeze([VENUES.SHOONYA]);

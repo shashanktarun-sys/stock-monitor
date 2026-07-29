@@ -2912,6 +2912,37 @@ body {
   letter-spacing: 0.04em;
 }
 
+.broker-status {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+.broker-status.connected {
+  color: var(--green, #34d399);
+}
+.trade-venue-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 8px 0 4px;
+  font-size: 0.82rem;
+}
+.trade-venue-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.trade-venue-opt.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.trade-venue-opt input {
+  accent-color: var(--accent, #3b82f6);
+}
+
 /* ---- Trading agents ---- */
 .agents-page .diversify-sub {
   max-width: 720px;

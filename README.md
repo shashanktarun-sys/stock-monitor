@@ -80,7 +80,7 @@ deploys as **pulse-stock-pal** on the free plan.
 Notes:
 - Free Render web services **sleep after ~15 minutes** of no traffic; the first request after sleep can take ~30–60s.
 - **Durable accounts:** set `DATABASE_URL` to a Postgres instance (Render Blueprint creates `pulse-db`, or use [Neon](https://neon.tech) / any Postgres). Without it, auth falls back to local `data/` files which **reset on free-host redeploys**.
-- Trading stays **paper-only** (`EXECUTION_MODE=paper`). Signed-in buys/sells go through `POST /api/orders` → PaperBroker. Live broker adapters can plug in later — see [docs/BROKER_ADAPTER.md](docs/BROKER_ADAPTER.md).
+- Default trading is **paper** via `POST /api/orders` → PaperBroker. **Shoonya (Finvasia)** live India equity is available after connecting in Profile — see [docs/BROKER_ADAPTER.md](docs/BROKER_ADAPTER.md). Agents remain paper-only.
 - Optional: set `GOOGLE_CLIENT_ID` and SMTP env vars in the Render dashboard for Google login and real OTP emails (without SMTP, signup/reset still works and shows the OTP on screen).
 
 ## Persistence

@@ -22,8 +22,11 @@ import {
   loadUserData,
   saveUserData,
   ensureBrokerConnectionStub,
+  upsertBrokerConnection,
+  getBrokerConnection,
 } from "./lib/store.js";
 import { createExecutionRouter, EXECUTION_MODE, VENUES } from "./brokers/router.js";
+import { shoonyaLogin, shoonyaLogout } from "./brokers/shoonya.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -2353,6 +2356,7 @@ const server = http.createServer(async (req, res) => {
             signal: body.signal,
             industryInfo: body.industryInfo,
             opts: body.opts,
+            product: body.product,
           },
           body.venue || VENUES.PAPER
         );
@@ -2365,27 +2369,112 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/orders" && req.method === "GET") {
       const user = await getSessionUser(req);
       if (!user) return sendJson(res, 401, { error: "Not signed in" });
-      return sendJson(res, 200, {
-        orders: await executionRouter.getOrders(user.sub),
-      });
+      const venue = String(url.searchParams.get("venue") || VENUES.PAPER).toLowerCase();
+      try {
+        return sendJson(res, 200, {
+          orders: await executionRouter.getOrders(user.sub, venue),
+        });
+      } catch (err) {
+        return sendJson(res, err.status || 500, { error: err.message });
+      }
     }
 
     if (pathname === "/api/positions" && req.method === "GET") {
       const user = await getSessionUser(req);
       if (!user) return sendJson(res, 401, { error: "Not signed in" });
-      return sendJson(res, 200, {
-        positions: await executionRouter.getPositions(user.sub),
-      });
+      const venue = String(url.searchParams.get("venue") || VENUES.PAPER).toLowerCase();
+      try {
+        return sendJson(res, 200, {
+          positions: await executionRouter.getPositions(user.sub, venue),
+        });
+      } catch (err) {
+        return sendJson(res, err.status || 500, { error: err.message });
+      }
     }
 
     if (pathname === "/api/broker/connections" && req.method === "GET") {
       const user = await getSessionUser(req);
       if (!user) return sendJson(res, 401, { error: "Not signed in" });
       await ensureBrokerConnectionStub(user.sub, VENUES.PAPER);
+      const connections = await executionRouter.listConnections(user.sub);
+      const shoonya = connections.find((c) => c.provider === VENUES.SHOONYA);
       return sendJson(res, 200, {
         executionMode: EXECUTION_MODE === "live" ? "live" : "paper",
-        connections: await executionRouter.listConnections(user.sub),
-        note: "Live brokerage linking is not enabled yet. Trading stays paper-only.",
+        connections,
+        liveEnabled: [VENUES.SHOONYA],
+        shoonyaConnected: !!(shoonya && shoonya.status === "connected"),
+        note: shoonya?.status === "connected"
+          ? "Shoonya linked. Choose Live (Shoonya) when placing Pilot orders on Indian symbols."
+          : "Connect Shoonya in your profile to place real India equity orders. Paper remains default.",
+      });
+    }
+
+    if (pathname === "/api/broker/shoonya/connect" && req.method === "POST") {
+      const user = await getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      const body = await readJsonBody(req);
+      try {
+        const tokens = await shoonyaLogin({
+          userid: body.userid || body.userId,
+          password: body.password,
+          twoFA: body.twoFA || body.totp || body.otp,
+          apiSecret: body.apiSecret || body.api_secret,
+          vendorCode: body.vendorCode || body.vc,
+          imei: body.imei,
+        });
+        await upsertBrokerConnection({
+          userSub: user.sub,
+          provider: VENUES.SHOONYA,
+          status: "connected",
+          tokens,
+          expiresAt: Date.now() + 20 * 60 * 60 * 1000, // ~session day
+          meta: {
+            uid: tokens.uid,
+            actid: tokens.actid,
+            uname: tokens.uname,
+            connectedAt: Date.now(),
+          },
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          provider: VENUES.SHOONYA,
+          uid: tokens.uid,
+          uname: tokens.uname,
+          message: "Shoonya connected. You can place live India orders from Pilot.",
+        });
+      } catch (err) {
+        return sendJson(res, err.status || 500, { error: err.message });
+      }
+    }
+
+    if (pathname === "/api/broker/shoonya/disconnect" && req.method === "POST") {
+      const user = await getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      try {
+        const conn = await getBrokerConnection(user.sub, VENUES.SHOONYA);
+        if (conn?.tokens) await shoonyaLogout(conn.tokens);
+        await upsertBrokerConnection({
+          userSub: user.sub,
+          provider: VENUES.SHOONYA,
+          status: "disconnected",
+          tokens: null,
+          meta: { disconnectedAt: Date.now() },
+        });
+        return sendJson(res, 200, { ok: true, provider: VENUES.SHOONYA });
+      } catch (err) {
+        return sendJson(res, err.status || 500, { error: err.message });
+      }
+    }
+
+    if (pathname === "/api/broker/shoonya/status" && req.method === "GET") {
+      const user = await getSessionUser(req);
+      if (!user) return sendJson(res, 401, { error: "Not signed in" });
+      const conn = await getBrokerConnection(user.sub, VENUES.SHOONYA);
+      return sendJson(res, 200, {
+        connected: !!(conn && conn.status === "connected"),
+        uid: conn?.meta?.uid || null,
+        uname: conn?.meta?.uname || null,
+        connectedAt: conn?.meta?.connectedAt || null,
       });
     }
 

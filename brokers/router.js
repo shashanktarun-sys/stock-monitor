@@ -1,30 +1,47 @@
 /**
- * Execution router — paper now; live venues rejected until an adapter is linked.
+ * Execution router — paper by default; Shoonya when connected + venue requested.
  */
-import { VENUES, SUPPORTED_LIVE_VENUES } from "./types.js";
+import { VENUES, LIVE_VENUES_ENABLED } from "./types.js";
 import { createPaperBroker } from "./paper.js";
-import { ensureBrokerConnectionStub, listBrokerConnections } from "../lib/store.js";
+import { createShoonyaBroker } from "./shoonya.js";
+import {
+  ensureBrokerConnectionStub,
+  listBrokerConnections,
+  getBrokerConnection,
+} from "../lib/store.js";
 
 const EXECUTION_MODE = String(process.env.EXECUTION_MODE || "paper").toLowerCase();
 
 export function createExecutionRouter({ resolvePrice }) {
   const paper = createPaperBroker({ resolvePrice });
+  const shoonya = createShoonyaBroker();
 
   return {
     mode: EXECUTION_MODE === "live" ? "live" : "paper",
 
     async placeOrder(input, preferredVenue) {
-      const venue = (preferredVenue || VENUES.PAPER).toLowerCase();
+      const venue = String(preferredVenue || VENUES.PAPER).toLowerCase();
 
-      if (venue === VENUES.PAPER || this.mode === "paper") {
+      // Explicit paper always allowed
+      if (venue === VENUES.PAPER) {
         await ensureBrokerConnectionStub(input.userSub, VENUES.PAPER);
         return paper.placeOrder(input);
       }
 
-      if (SUPPORTED_LIVE_VENUES.includes(venue)) {
-        const err = new Error(
-          `Live broker "${venue}" is not connected yet. Pulse stays paper-only until you link a broker adapter.`
-        );
+      if (venue === VENUES.SHOONYA) {
+        const conn = await getBrokerConnection(input.userSub, VENUES.SHOONYA);
+        if (!conn || conn.status !== "connected") {
+          const err = new Error(
+            "Shoonya is not connected. Open Profile → Connect Shoonya, then retry."
+          );
+          err.status = 401;
+          throw err;
+        }
+        return shoonya.placeOrder(input);
+      }
+
+      if (LIVE_VENUES_ENABLED.includes(venue)) {
+        const err = new Error(`Live broker "${venue}" adapter is not ready yet.`);
         err.status = 501;
         throw err;
       }
@@ -34,17 +51,22 @@ export function createExecutionRouter({ resolvePrice }) {
       throw err;
     },
 
-    getPositions(userSub) {
+    async getPositions(userSub, venue = VENUES.PAPER) {
+      if (venue === VENUES.SHOONYA) return shoonya.getPositions(userSub);
       return paper.getPositions(userSub);
     },
 
-    getOrders(userSub) {
+    async getOrders(userSub, venue = VENUES.PAPER) {
+      if (venue === VENUES.SHOONYA) return shoonya.getOrders(userSub);
       return paper.getOrders(userSub);
     },
 
     listConnections(userSub) {
       return listBrokerConnections(userSub);
     },
+
+    shoonya,
+    paper,
   };
 }
 

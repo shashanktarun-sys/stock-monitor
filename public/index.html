@@ -828,6 +828,48 @@
           </div>
         </div>
 
+        <div id="profileBrokerWrap" class="profile-section">
+          <h3>Broker — Shoonya (live India)</h3>
+          <p class="login-sub" style="margin:0 0 10px">
+            Connect your Finvasia / Shoonya account to place <b>real</b> equity orders from Pulse.
+            Paper trading stays the default until you choose Live.
+          </p>
+          <div id="shoonyaStatus" class="broker-status">Not connected</div>
+          <form id="shoonyaConnectForm" class="auth-form">
+            <label class="field">
+              <span>User ID (client code)</span>
+              <input id="shoonyaUserId" type="text" autocomplete="username" placeholder="FA12345" required />
+            </label>
+            <label class="field">
+              <span>Password</span>
+              <input id="shoonyaPassword" type="password" autocomplete="current-password" required />
+            </label>
+            <label class="field">
+              <span>2FA / TOTP code</span>
+              <input id="shoonyaTwoFA" type="text" inputmode="numeric" autocomplete="one-time-code"
+                     placeholder="Authenticator code" required />
+            </label>
+            <label class="field">
+              <span>API secret</span>
+              <input id="shoonyaApiSecret" type="password" autocomplete="off"
+                     placeholder="From Shoonya API settings" required />
+            </label>
+            <label class="field">
+              <span>Vendor code <small>(optional — defaults to UserID_U)</small></span>
+              <input id="shoonyaVendorCode" type="text" placeholder="FA12345_U" />
+            </label>
+            <div id="shoonyaMsg" class="auth-msg hidden"></div>
+            <div class="agent-create-actions" style="margin-top:10px">
+              <button type="submit" id="shoonyaConnectBtn" class="auth-btn primary">Connect Shoonya</button>
+              <button type="button" id="shoonyaDisconnectBtn" class="auth-btn hidden">Disconnect</button>
+            </div>
+          </form>
+          <p class="pf-note" style="margin-top:10px">
+            Credentials are sent to Pulse server only to create a Shoonya session. Session tokens are encrypted at rest.
+            Generate your API secret in the Shoonya app / Prism API settings. Enable API access on your account first.
+          </p>
+        </div>
+
         <button id="profileSignOut" class="auth-btn">Sign out</button>
       </div>
     </div>
