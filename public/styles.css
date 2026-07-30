@@ -1729,6 +1729,13 @@ body {
 .pfh-action.muted {
   color: var(--muted);
 }
+.pfh-rotate {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #fb923c;
+  letter-spacing: 0.01em;
+}
 .pfh-sym {
   font-weight: 700;
 }

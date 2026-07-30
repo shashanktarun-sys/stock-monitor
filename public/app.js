@@ -4072,10 +4072,19 @@ function renderPortfolio() {
               curScore != null ? ` ${curScore > 0 ? "+" : ""}${curScore}` : ""
             }</span>`
           : `<span class="muted-dash">…</span>`;
-        const action = portfolioAction(pos.buySignal, curReco, uplPct);
+        const action = portfolioAction(pos.buySignal, curReco, uplPct, q);
         const basketTag = pos.fromBasket
           ? `<span class="basket-tag" title="Bought via Diversify basket">Basket buy</span>`
           : "";
+        const rotateHint =
+          action.book?.rotate
+            ? `<div class="pfh-rotate" title="${escapeAttr(action.book.why)}">→ ${action.book.rotate.symbol.replace(
+                ".NS",
+                ""
+              )}</div>`
+            : action.book
+              ? `<div class="pfh-rotate" title="${escapeAttr(action.book.why)}">Book &amp; rotate</div>`
+              : "";
         return `
         <div class="pf-holding" data-symbol="${sym}" role="button" tabindex="0" title="Open market analysis">
           <div class="pfh-main">
@@ -4088,7 +4097,9 @@ function renderPortfolio() {
           <div class="pfh-cell"><span>Last</span>${money(price, pos.currency)}</div>
           <div class="pfh-cell"><span>At buy</span>${buySig}</div>
           <div class="pfh-cell"><span>Now</span>${curSig}</div>
-          <div class="pfh-cell"><span>Action</span><b class="pfh-action ${action.cls}">${action.label}</b></div>
+          <div class="pfh-cell"><span>Action</span><b class="pfh-action ${action.cls}" title="${escapeAttr(
+          action.title || action.book?.why || action.label
+        )}">${action.label}</b>${rotateHint}</div>
           <div class="pfh-cell pnl ${cls}"><span>P&L</span>${signedMoney(
           upl,
           pos.currency
@@ -4147,7 +4158,115 @@ function pfMetric(label, val, cls = "") {
 }
 
 /** Suggest an action from buy-time signal vs current Pulse signal + P&L. */
-function portfolioAction(buySignal, currentSignal, uplPct) {
+/**
+ * Short-term scalp helper: odds the name does NOT appreciate further over the next N days.
+ * Uses the same daily return distribution as agent goal odds (candles / fallback vol).
+ * Returns null when we cannot model.
+ */
+function estimateNoFurtherUpside(q, horizonDays = 3) {
+  if (!q) return null;
+  const dist = estimateQuoteDistribution(q);
+  if (!dist || !(dist.sigmaDaily > 0)) return null;
+  const days = Math.max(1, Math.min(5, horizonDays));
+  // Mild mean-reversion after a green day: if already up today, trim expected drift
+  const dayPct =
+    Number(q.analysis?.changePercent) ||
+    (q.previousClose > 0 && q.price > 0
+      ? ((q.price - q.previousClose) / q.previousClose) * 100
+      : 0);
+  let mu = dist.muDaily;
+  if (dayPct >= 1) mu -= 0.0015 * Math.min(3, dayPct); // fade recent pop
+  const meanH = mu * days;
+  const sigmaH = Math.max(0.0008, dist.sigmaDaily * Math.sqrt(days));
+  // "Not appreciate" ≈ return over horizon <= +0.25% (noise floor)
+  const threshold = 0.0025;
+  const z = (threshold - meanH) / sigmaH;
+  const noUpside = normalCdf(z); // P(R <= threshold)
+  return {
+    noUpsidePct: Math.round(Math.max(1, Math.min(99, noUpside * 100))),
+    upsidePct: Math.round(Math.max(1, Math.min(99, (1 - noUpside) * 100))),
+    dayPct: +dayPct.toFixed(2),
+    horizonDays: days,
+    muDailyPct: +(mu * 100).toFixed(3),
+    sigmaDailyPct: +(dist.sigmaDaily * 100).toFixed(3),
+  };
+}
+
+/** Best alternate idea already loaded in quotes (same market, not held). */
+function pickRotateCandidate(fromSymbol, currency) {
+  const fromCountry = assetCountry(fromSymbol, currency);
+  const held = new Set(Object.keys(state.portfolio.positions || {}));
+  const candidates = Object.values(state.quotes || {})
+    .filter(
+      (q) =>
+        q?.symbol &&
+        q.symbol !== fromSymbol &&
+        !held.has(q.symbol) &&
+        assetCountry(q.symbol, q.currency) === fromCountry &&
+        q.analysis &&
+        ["BUY", "STRONG BUY"].includes(q.analysis.recommendation) &&
+        (q.analysis.score || 0) >= 20
+    )
+    .sort((a, b) => (b.analysis?.score || 0) - (a.analysis?.score || 0));
+  const best = candidates[0];
+  if (!best) return null;
+  return {
+    symbol: best.symbol,
+    name: best.name || best.symbol,
+    score: best.analysis?.score,
+    reco: best.analysis?.recommendation,
+  };
+}
+
+/**
+ * Short-term book-profit rule:
+ * gained ~1–2%+ (day and/or unrealized) AND modeled odds of no further 2–3d upside are high.
+ */
+function shortTermBookProfitHint(q, uplPct) {
+  if (!q) return null;
+  const model = estimateNoFurtherUpside(q, 3);
+  if (!model) return null;
+  const dayPct = model.dayPct;
+  const gainedEnough = dayPct >= 1 || uplPct >= 1;
+  const strongEnoughGain = dayPct >= 1.5 || uplPct >= 1.5 || (dayPct >= 1 && uplPct >= 0.5);
+  if (!gainedEnough || !strongEnoughGain) return null;
+  // Don't nag if Pulse is still aggressively bullish
+  const reco = q.analysis?.recommendation || "";
+  const score = q.analysis?.score || 0;
+  if (reco === "STRONG BUY" && score >= 55 && model.noUpsidePct < 90) return null;
+  // User asked ~95%; surface from 85% with stronger label at 92%+
+  if (model.noUpsidePct < 85) return null;
+  const rotate = pickRotateCandidate(q.symbol, q.currency);
+  return {
+    ...model,
+    rotate,
+    label:
+      model.noUpsidePct >= 92
+        ? `Book profit · ${model.noUpsidePct}%`
+        : `Consider book · ${model.noUpsidePct}%`,
+    cls: "down",
+    why: `Up ${dayPct >= 1 ? dayPct.toFixed(1) + "% today" : signedPct(uplPct)} with ~${
+      model.noUpsidePct
+    }% modeled odds of little further gain over ${model.horizonDays}d. Book and redeploy.${
+      rotate
+        ? ` Better Pulse idea: ${rotate.symbol.replace(".NS", "")} (${rotate.reco}${
+            rotate.score != null ? ` ${rotate.score > 0 ? "+" : ""}${rotate.score}` : ""
+          }).`
+        : " Scan Market / Analyze for a stronger name."
+    }`,
+  };
+}
+
+function portfolioAction(buySignal, currentSignal, uplPct, q = null) {
+  const book = shortTermBookProfitHint(q, uplPct);
+  if (book) {
+    return {
+      label: book.label,
+      cls: book.cls,
+      title: book.why,
+      book,
+    };
+  }
   const bearish = new Set(["SELL", "STRONG SELL"]);
   const bullish = new Set(["BUY", "STRONG BUY"]);
   if (!currentSignal) return { label: "Waiting…", cls: "muted" };
@@ -4428,6 +4547,21 @@ function analyzeHoldingSuggestion(symbol, pos, held, stress) {
   const stressNote = stressOn
     ? ` Market is in ${stress.label.toLowerCase()} — preserve capital.`
     : "";
+
+  // Short-term: book 1–2%+ day gains when further 2–3d upside looks unlikely
+  const book = shortTermBookProfitHint(q, uplPct);
+  if (book && !crashOn) {
+    return {
+      ...base,
+      type: "sell",
+      priority: 88 + Math.min(10, book.noUpsidePct - 85),
+      tone: "down",
+      title: book.label,
+      qty: pos.qty,
+      rotateTo: book.rotate?.symbol || null,
+      why: book.why + stressNote,
+    };
+  }
 
   if (isBearishSignal(reco) || (stressOn && uplPct <= -2)) {
     if (uplPct >= 1 || (stressOn && uplPct >= 0)) {
@@ -4903,13 +5037,25 @@ function renderAnalyzePlan(plan) {
           ${pnl}
         </div>
         <p class="analyze-why">${escapeAttr(s.why)}</p>
-        <div class="analyze-card-actions">${btn}</div>
+        <div class="analyze-card-actions">${btn}${
+          s.rotateTo
+            ? `<button type="button" class="mini-btn analyze-rotate" data-symbol="${s.rotateTo}">Open ${String(
+                s.rotateTo
+              ).replace(".NS", "")}</button>`
+            : ""
+        }</div>
       </div>`;
     })
     .join("");
 
   el.analyzeResults.querySelectorAll(".analyze-act").forEach((btn) => {
     btn.addEventListener("click", () => applyAnalyzeSuggestion(Number(btn.dataset.idx)));
+  });
+  el.analyzeResults.querySelectorAll(".analyze-rotate").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openHoldingAnalysis(btn.dataset.symbol);
+    });
   });
 }
 
